@@ -1,0 +1,25 @@
+# 默认忽略所有文件
+*
+
+# 保留目录结构（允许递归搜索）
+!*/
+
+# === 仅跟踪以下文件 ===
+
+# Python 脚本
+!*.py
+
+# 项目文档
+!AGENTS.md
+
+# Git 配置
+!.gitignore
+
+# 开源协议
+!LICENSE
+
+# === 强制忽略以下目录 ===
+.venv/
+__pycache__/
+.idea/
+.uploads/
