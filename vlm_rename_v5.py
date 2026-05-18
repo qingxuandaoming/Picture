@@ -13,6 +13,9 @@
 v7.0.1 改进:
 - 错误处理增强：区分超时/HTTP错误/网络错误，打印具体错误原因
 - 缩短重试间隔(0.3s→0.1s)和内部重试次数(3→2)，降低请求超时(30s→15s)
+
+v7.0.2 改进:
+- 配置分离：将账号、API信息、本地目录、重试次数等硬编码提取到 config.json，确保代码库脱敏
 8. 比例分类保留 - 横屏(壁纸)和1比1(头像)优先级最高
 
 版本号规则:
@@ -21,36 +24,39 @@ v7.0.1 改进:
 """
 
 # 当前版本号，每次修改请按上方规则同步更新
-VERSION = "7.0.1"
+VERSION = "7.0.2"
 import os, re, json, time, shutil, base64, requests, io, threading, sys, hashlib, traceback
 from pathlib import Path
 from PIL import Image
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-ACCOUNTS = [
-    {"name": "账号A(135RPM)", "keys": [
-        "c689bd36-b9a7-4efa-85f1-a265565ff8d5",
-        "9a94c666-6692-4d8e-ac9d-c355642c1fab"
-    ]},
-    {"name": "账号B(177RPM)", "keys": [
-        "ark-4ea264a4-0fd9-4cac-a8cd-291a73393b6f-d7fda",
-        "ark-7fa68f57-d044-44ca-96bb-4b2c0538e749-7f164"
-    ]}
-]
+CONFIG_FILE = Path(__file__).parent / "config.json"
+if not CONFIG_FILE.exists():
+    print(f"⚠️ 配置文件不存在: {CONFIG_FILE}")
+    print("请复制 config.example.json 为 config.json 并填入正确的配置。")
+    sys.exit(1)
 
-API_ENDPOINT = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
-MODEL = "doubao-seed-2-0-lite-260428"
+with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+    config_data = json.load(f)
 
-BASE_DIR = Path(r"e:\Picture")
+ACCOUNTS = config_data.get("accounts", [])
+if not ACCOUNTS:
+    print("⚠️ 配置文件中未提供有效的账号(accounts)配置。")
+    sys.exit(1)
+
+API_ENDPOINT = config_data.get("api_endpoint", "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
+MODEL = config_data.get("default_model", "doubao-seed-2-0-lite-260428")
+
+BASE_DIR = Path(config_data.get("base_dir", r"e:\Picture"))
 LOG_FILE = BASE_DIR / "rename_log.json"
 TEMP_FILE = BASE_DIR / "processed_files.txt"
 MD5_FILE = BASE_DIR / "processed_md5.txt"
 ERROR_LOG = BASE_DIR / "error_log.txt"
 
-BATCH_SIZE = 500  # 每次运行最多处理500张
+BATCH_SIZE = config_data.get("batch_size", 500)
 CURRENT_BATCH = 1
-MAX_RETRIES = 3  # 单张图片最大重试次数
+MAX_RETRIES = config_data.get("max_retries", 3)
 
 from vlm_classify import CATEGORIES, SCAN_CATEGORIES, CATEGORY_KEYWORDS, IMAGE_EXTS, suggest_category, check_ratio_category
 
@@ -88,7 +94,7 @@ fail_lock = threading.Lock()
 retry_lock = threading.Lock()
 
 stats = {"processed": 0, "renamed": 0, "reclassified": 0, "errors": 0, "skipped": 0, "retried": 0}
-consecutive_failures = {"账号A(135RPM)": 0, "账号B(177RPM)": 0}
+consecutive_failures = {acc["name"]: 0 for acc in ACCOUNTS}
 retry_count = {}  # 记录每张图片的重试次数
 
 log_data = []

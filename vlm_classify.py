@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-图片分类模块 v7.0.0 - 重构分类体系
+图片分类模块 v7.0.2 - 配置文件分离
 
 核心改进：
 1. 按内容语义分类，废除来源分类（B站/通讯）
@@ -404,9 +404,21 @@ def run_classification_task(base_dir=r"e:\Picture"):
             print(f"  {f_}: {n}")
 
 
+def get_default_base_dir():
+    config_file = Path(__file__).parent / "config.json"
+    if config_file.exists():
+        import json
+        try:
+            with open(config_file, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            return cfg.get("base_dir", r"e:\Picture")
+        except Exception:
+            pass
+    return r"e:\Picture"
+
 if __name__ == "__main__":
     import sys
-    base_directory = r"e:\Picture"
+    base_directory = get_default_base_dir()
     if len(sys.argv) > 1:
         base_directory = sys.argv[1]
     run_classification_task(base_directory)

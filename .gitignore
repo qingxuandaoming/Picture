@@ -15,6 +15,9 @@
 # Git 配置
 !.gitignore
 
+# 配置模板
+!config.example.json
+
 # 开源协议
 !LICENSE
 

@@ -1,7 +1,7 @@
 # AGENTS.md — 图片智能重命名和分类项目
 
 > 本文件供 AI 编码助手阅读。项目所有代码、注释及交互界面均使用中文。
-> 当前版本：**v7.0.1**
+> 当前版本：**v7.0.2**
 
 ---
 
@@ -59,6 +59,8 @@ pip install Pillow requests
 E:\Picture\
 ├── vlm_rename_v5.py          # 主程序（VLM重命名+分类）
 ├── vlm_classify.py           # 分类模块（可独立运行迁移任务）
+├── config.json               # 配置文件（本地目录和API Key等敏感信息）
+├── config.example.json       # 配置模板
 ├── rename_log.json           # 处理日志
 ├── processed_files.txt       # 旧版去重记录
 ├── processed_md5.txt         # MD5 去重记录
@@ -84,7 +86,7 @@ E:\Picture\
 └── 其他\
 ```
 
-> **注意**：代码中的 `BASE_DIR` 和日志文件路径均为**硬编码的 Windows 绝对路径**，直接运行在非 Windows 环境或路径不存在时会报错。
+> **注意**：日志文件和目标路径依赖 `config.json` 中的 `base_dir` 配置，请确保在运行前已正确配置你的本地绝对路径（例如 Windows 下的 `e:\Picture`）。
 
 ---
 
@@ -209,7 +211,7 @@ python vlm_rename_v5.py 2
 - **格式**：使用 4 空格缩进；
 - **路径处理**：混合使用 `pathlib.Path` 与字符串路径；`BASE_DIR` 使用原始字符串 `r"e:\Picture"`；
 - **全局状态**：大量使用模块级全局变量（`stats`、`processed_keys`、各类 `Lock`），未封装为类；
-- **硬编码敏感信息**：API Key 直接写在源码中（`ACCOUNTS` 列表），修改时直接编辑文件即可；
+- **配置分离**：API Key 和本地路径已抽离到 `config.json`，不再硬编码在源码中；
 - **无类型注解**：函数参数与返回值未使用类型提示。
 
 ---
@@ -227,8 +229,8 @@ python vlm_rename_v5.py 2
 
 ## 安全与敏感信息注意事项
 
-- **API Key 硬编码**：`vlm_rename_v5.py` 中 `ACCOUNTS` 列表包含明文 API Key，**切勿提交到公共仓库**；
-- **本地文件系统操作**：脚本直接对 `e:\Picture` 进行移动、重命名、删除（日志清空），运行前建议备份重要图片；
+- **配置分离**：所有敏感信息（如 API Key 和本地路径）均存储在 `config.json` 中，已在 `.gitignore` 排除，**切勿提交此文件**；
+- **本地文件系统操作**：脚本直接对指定的目录进行移动、重命名、删除（日志清空），运行前建议备份重要图片；
 - **网络请求**：仅向 `https://ark.cn-beijing.volces.com/api/v3/chat/completions` 发送请求，携带 `Authorization: Bearer <api_key>`；
 - **无输入校验**：外部输入仅限于交互式菜单，不涉及 Web 接口或文件上传，SQL 注入、XSS 等风险不存在。
 

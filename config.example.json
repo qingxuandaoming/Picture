@@ -1,0 +1,22 @@
+{
+  "accounts": [
+    {
+      "name": "账号A(135RPM)",
+      "keys": [
+        "your-api-key-1",
+        "your-api-key-2"
+      ]
+    },
+    {
+      "name": "账号B(177RPM)",
+      "keys": [
+        "your-api-key-3"
+      ]
+    }
+  ],
+  "api_endpoint": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+  "default_model": "doubao-seed-2-0-lite-260428",
+  "base_dir": "e:\\Picture",
+  "batch_size": 500,
+  "max_retries": 3
+}
