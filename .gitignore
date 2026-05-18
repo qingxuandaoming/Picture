@@ -10,6 +10,7 @@
 !*.py
 
 # 项目文档
+!README.md
 !AGENTS.md
 
 # Git 配置
