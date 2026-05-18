@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-图片智能重命名和分类 - v7.0.1
+图片智能重命名和分类 - v7.0.3
 改进点:
 1. 重构分类体系 - 18个基于内容语义的分类，废除来源分类（B站/通讯）
 2. VLM直接输出分类 - prompt返回JSON格式(description+category)，不再纯靠关键词
@@ -14,6 +14,12 @@ v7.0.1 改进:
 - 错误处理增强：区分超时/HTTP错误/网络错误，打印具体错误原因
 - 缩短重试间隔(0.3s→0.1s)和内部重试次数(3→2)，降低请求超时(30s→15s)
 
+v7.0.3 改进:
+- 修复频繁超时：分离连接超时(5s)与读取超时(45s)，VLM推理需要更长读取时间
+- 超时指数退避：超时后等待1s→2s→4s，给服务端恢复时间（替代固定0.1s立即重试）
+- 缩小图片最大边800→600px，降低VLM推理时间和传输体积
+- 单key重试次数2→3，减少因偶发超时直接切key的浪费
+
 v7.0.2 改进:
 - 配置分离：将账号、API信息、本地目录、重试次数等硬编码提取到 config.json，确保代码库脱敏
 8. 比例分类保留 - 横屏(壁纸)和1比1(头像)优先级最高
@@ -24,7 +30,7 @@ v7.0.2 改进:
 """
 
 # 当前版本号，每次修改请按上方规则同步更新
-VERSION = "7.0.2"
+VERSION = "7.0.3"
 import os, re, json, time, shutil, base64, requests, io, threading, sys, hashlib, traceback
 from pathlib import Path
 from PIL import Image
@@ -174,7 +180,7 @@ def compress_image(image_path, max_size_kb=80):
             img = img.convert("RGB")
         elif img.mode != "RGB":
             img = img.convert("RGB")
-        max_dim = 800
+        max_dim = 600
         w, h = img.size
         if max(w, h) > max_dim:
             ratio = max_dim / max(w, h)
@@ -263,9 +269,11 @@ def analyze_image(image_path, account_info):
             ]}],
             "max_tokens": 150, "temperature": 0.3
         }
-        for attempt in range(2):
+        # 单key重试3次，给偶发超时更多恢复机会
+        for attempt in range(3):
             try:
-                resp = requests.post(API_ENDPOINT, headers=headers, json=payload, timeout=15)
+                # 分离超时：连接5秒（网络握手够用）+ 读取45秒（VLM推理需要时间）
+                resp = requests.post(API_ENDPOINT, headers=headers, json=payload, timeout=(5, 45))
                 resp.raise_for_status()
                 raw_content = resp.json()['choices'][0]['message']['content'].strip()
                 with fail_lock:
@@ -273,7 +281,9 @@ def analyze_image(image_path, account_info):
                 return parse_vlm_response(raw_content)
             except requests.exceptions.Timeout:
                 last_error = f"请求超时(key{key_idx+1}, 第{attempt+1}次)"
-                time.sleep(0.1)
+                # 超时指数退避：1s→2s→4s，给服务端喘息时间
+                backoff = min(2 ** attempt, 4)
+                time.sleep(backoff)
             except requests.exceptions.HTTPError as e:
                 status_code = e.response.status_code if e.response else "未知"
                 error_body = ""
@@ -282,11 +292,11 @@ def analyze_image(image_path, account_info):
                 except Exception:
                     pass
                 last_error = f"HTTP {status_code}: {error_body[:100]}"
-                # 429 限流稍等，其他快速重试
-                time.sleep(0.3 if status_code == 429 else 0.1)
+                # 429 限流等久一点，其他快速重试
+                time.sleep(1.0 if status_code == 429 else 0.1)
             except requests.exceptions.ConnectionError:
                 last_error = "网络连接失败"
-                time.sleep(0.1)
+                time.sleep(1.0)
             except Exception as e:
                 last_error = f"{type(e).__name__}: {str(e)[:80]}"
                 time.sleep(0.1)
