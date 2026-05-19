@@ -64,6 +64,35 @@ BATCH_SIZE = config_data.get("batch_size", 500)
 CURRENT_BATCH = 1
 MAX_RETRIES = config_data.get("max_retries", 3)
 
+def load_config():
+    """加载配置文件"""
+    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def get_account_info(config, index=0):
+    """获取指定索引的账号信息"""
+    accounts = config.get("accounts", [])
+    if index < 0 or index >= len(accounts):
+        return accounts[0] if accounts else None
+    return accounts[index]
+
+def collect_images(base_dir=None):
+    """收集所有待处理的图片"""
+    if base_dir is None:
+        base_dir = BASE_DIR
+    else:
+        base_dir = Path(base_dir)
+
+    all_images = []
+    for cat in SCAN_CATEGORIES:
+        cat_dir = base_dir / cat
+        if not cat_dir.exists():
+            continue
+        for f in cat_dir.iterdir():
+            if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
+                all_images.append({"path": f, "original_category": cat})
+    return all_images
+
 from vlm_classify import CATEGORIES, SCAN_CATEGORIES, CATEGORY_KEYWORDS, IMAGE_EXTS, suggest_category, check_ratio_category
 
 # ===== 双重去重系统 =====
@@ -412,6 +441,102 @@ def process_single_image(img_info, account_info, idx, total_tasks):
                 json.dump(log_data, f, ensure_ascii=False, indent=2)
 
     return True  # 成功
+
+def process_single_image_api(img_info, account_info, auto_rename: bool = True, auto_move: bool = True):
+    """API专用的单图处理函数，返回详细结果字典"""
+    img_path = img_info["path"] if isinstance(img_info, dict) else Path(img_info)
+    original_cat = img_info.get("original_category", "其他") if isinstance(img_info, dict) else "其他"
+    old_key = f"{original_cat}/{img_path.name}"
+    account_name = account_info["name"]
+
+    result = {
+        "success": False,
+        "original_path": str(img_path),
+        "original_category": original_cat,
+        "description": None,
+        "category": None,
+        "new_filename": None,
+        "new_path": None,
+        "reclassified": False,
+        "skipped": False,
+        "error": None
+    }
+
+    # 检查文件是否存在
+    if not check_file_exists(img_path):
+        result["error"] = "文件不存在"
+        result["skipped"] = True
+        return result
+
+    # 双重去重判断
+    if is_processed(img_path, original_cat):
+        result["error"] = "文件已处理过"
+        result["skipped"] = True
+        return result
+
+    description, vlm_category = analyze_image(img_path, account_info)
+    if not description:
+        result["error"] = "图片分析失败"
+        return result
+
+    result["description"] = description
+    result["category"] = vlm_category
+
+    # 比例分类优先级最高：16:9 横屏 和 1:1 方形
+    ratio_cat = check_ratio_category(img_path)
+    if ratio_cat:
+        new_cat = ratio_cat
+    else:
+        new_cat = suggest_category(description, original_cat, img_path, vlm_category=vlm_category)
+
+    result["category"] = new_cat
+    result["reclassified"] = new_cat != original_cat
+
+    if not auto_rename and not auto_move:
+        # 仅分析，不重命名不移动
+        result["success"] = True
+        return result
+
+    # 在移动文件之前，先计算MD5并记录
+    pre_md5 = None
+    try:
+        pre_md5 = file_md5(img_path)
+    except:
+        pass
+
+    if auto_move:
+        target_dir = BASE_DIR / new_cat
+    else:
+        target_dir = img_path.parent
+
+    new_filename = safe_move(img_path, target_dir, description) if auto_rename else img_path.name
+
+    if not new_filename:
+        result["error"] = "文件移动/重命名失败"
+        return result
+
+    result["new_filename"] = new_filename
+    result["new_path"] = str(target_dir / new_filename)
+    result["success"] = True
+
+    # 双重记录（MD5已在移动前计算）
+    record_processed_with_md5(old_key, pre_md5)
+
+    # 写日志
+    log_entry = {
+        "original_path": str(img_path),
+        "original_category": original_cat,
+        "new_category": new_cat,
+        "description": description,
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    with log_lock:
+        log_data.append(log_entry)
+        if len(log_data) % 10 == 0:
+            with open(LOG_FILE, "w", encoding="utf-8") as f:
+                json.dump(log_data, f, ensure_ascii=False, indent=2)
+
+    return result
 
 
 def worker_thread(account_info, task_queue, total_tasks):
