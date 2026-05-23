@@ -528,6 +528,8 @@ async def serve_thumbnail(file_path: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ===== 基础接口 =====
+import copy
+
 @app.get("/api/health", response_model=BaseResponse)
 async def health_check():
     """健康检查接口"""
@@ -539,7 +541,7 @@ async def get_config():
     try:
         config = load_config()
         # 隐藏API密钥敏感信息
-        safe_config = config.copy()
+        safe_config = copy.deepcopy(config)
         for acc in safe_config.get("accounts", []):
             acc["keys"] = ["***" for _ in acc["keys"]]
         return BaseResponse(data=safe_config)
@@ -551,8 +553,24 @@ async def update_config(config_update: ConfigUpdate = Body(...)):
     """更新配置"""
     try:
         current_config = load_config()
-        # 更新配置项
         update_data = config_update.dict(exclude_unset=True)
+        
+        # 防止前端传回的 *** 覆盖原有真实 key
+        if "accounts" in update_data:
+            current_accounts = current_config.get("accounts", [])
+            for i, acc in enumerate(update_data["accounts"]):
+                if "keys" in acc:
+                    # 如果传过来全是 ***，说明前端没修改，保留原key
+                    if all(k == "***" for k in acc["keys"]):
+                        if i < len(current_accounts):
+                            acc["keys"] = current_accounts[i].get("keys", [])
+                        else:
+                            acc["keys"] = []
+                    else:
+                        # 过滤掉其中的 ***（如果用户修改时部分填了***）
+                        acc["keys"] = [k for k in acc["keys"] if k != "***"]
+
+        # 更新配置项
         current_config.update(update_data)
 
         # 写入配置文件（原子操作，防损坏）
@@ -1398,7 +1416,10 @@ if __name__ == "__main__":
         
     actual_port = get_available_port(8000, max_ports=5)
     
-    # 移除了自动打开浏览器逻辑，统一由 start.bat 在前端启动
-    
+    # 只有当作为独立可执行文件（打包后）运行时，才由后端启动浏览器
+    # 否则（源码运行）由 start.bat 启动浏览器，防止弹出两个标签页
+    if getattr(sys, 'frozen', False):
+        threading.Thread(target=open_browser, args=(actual_port,), daemon=True).start()
+
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=actual_port)
