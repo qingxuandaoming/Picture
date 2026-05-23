@@ -6,6 +6,9 @@ on:
       - 'v*'  # 只有推送形如 v1.7.0 的 tag 时触发发布
   workflow_dispatch: # 允许在 Actions 页面手动点击触发
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build on ${{ matrix.os }}
