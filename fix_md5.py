@@ -1,16 +1,23 @@
+import platformdirs
 import json
 import hashlib
 from pathlib import Path
 
-BASE_DIR = Path(r"e:\Picture")
-LOG_FILE = BASE_DIR / "rename_log.json"
-MD5_FILE = BASE_DIR / "processed_md5.txt"
+# 获取操作系统标准的应用数据目录
+USER_DATA_DIR = Path(platformdirs.user_data_dir("VLM_Renamer", "AI_Renamer"))
+CONFIG_FILE = USER_DATA_DIR / "config.json"
 
-CATEGORIES = [
-    "AI生成图片", "B站图片", "人像", "其他",
-    "截图", "插画艺术", "海报设计", "照片", "通讯图片", "风景",
-    "厚涂", "横屏", "1比1",
-]
+try:
+    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    BASE_DIR = Path(cfg.get("base_dir", r"e:\Picture"))
+except Exception:
+    BASE_DIR = Path(r"e:\Picture")
+
+LOG_FILE = USER_DATA_DIR / "rename_log.json"
+MD5_FILE = USER_DATA_DIR / "processed_md5.txt"
+
+from vlm_classify import SCAN_CATEGORIES as CATEGORIES
 
 def file_md5(filepath):
     h = hashlib.md5()

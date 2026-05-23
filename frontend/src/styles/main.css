@@ -1,0 +1,407 @@
+/* 导入主题定义 */
+@import './themes.css';
+
+/* 全局样式重置 */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: var(--bg-primary);
+  min-height: 100vh;
+  color: var(--text-primary);
+  overflow-x: hidden;
+  transition: background 0.3s ease, color 0.3s ease;
+}
+
+.theme-morandi {
+  --text-primary: #4a4a4a;
+  --text-secondary: #7a7a7a;
+}
+
+.theme-deepdark {
+  --text-primary: #f0f4f8;
+  --text-secondary: #8b9bb4;
+}
+
+/* 自定义滚动条 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
+
+/* ========== 主容器布局 ========== */
+.app-container {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* ========== 侧边栏 - 图标导航栏 ========== */
+.sidebar {
+  width: 72px;
+  background: var(--bg-secondary);
+  backdrop-filter: blur(20px);
+  position: fixed;
+  height: 100vh;
+  left: 0;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20px 0 16px;
+  border-right: 1px solid var(--border-color);
+}
+
+/* Logo */
+.sidebar-logo {
+  margin-bottom: 24px;
+}
+
+.logo-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  background: var(--accent-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 800;
+  color: white;
+  letter-spacing: -0.5px;
+  box-shadow: 0 4px 12px var(--shadow-color);
+}
+
+/* 导航 */
+.sidebar-nav {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 0 12px;
+}
+
+.nav-item {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: all 0.2s ease;
+  position: relative;
+  cursor: pointer;
+}
+
+.nav-item:hover {
+  background: var(--progress-bg);
+  color: var(--text-primary);
+}
+
+.nav-item-active {
+  background: var(--progress-bg);
+  color: var(--text-primary);
+  box-shadow: inset 3px 0 0 var(--accent-primary);
+}
+
+/* 悬停 tooltip */
+.nav-tooltip {
+  position: absolute;
+  left: calc(100% + 12px);
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(60, 60, 60, 0.95);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 8px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 200;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+/* 深色模式下 tooltip */
+.theme-deepdark .nav-tooltip {
+  background: rgba(30, 30, 35, 0.95);
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.nav-item:hover .nav-tooltip {
+  opacity: 1;
+}
+
+/* 底部区域 */
+.sidebar-bottom {
+  padding: 0 12px;
+  border-top: 1px solid var(--border-color);
+  padding-top: 12px;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+/* ========== 主内容区域 ========== */
+.main-content {
+  flex: 1;
+  margin-left: 72px;
+  padding: 28px 32px;
+  min-height: 100vh;
+}
+
+/* ========== 页面头部 ========== */
+.page-header {
+  background: var(--bg-card);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 28px 32px;
+  margin-bottom: 24px;
+}
+
+.page-header h1 {
+  font-size: 28px;
+  background: var(--accent-primary);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 8px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+.page-header p {
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ========== 卡片样式 ========== */
+.card {
+  background: var(--bg-card);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 24px;
+  margin-bottom: 24px;
+  transition: border-color 0.2s ease;
+}
+
+.card:hover {
+  border-color: rgba(199, 177, 152, 0.25);
+}
+
+.card h3 {
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+/* ========== 统计卡片 ========== */
+.stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 24px;
+  transition: all 0.2s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.stat-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--accent-primary);
+  opacity: 0.06;
+  pointer-events: none;
+}
+
+.stat-card:hover {
+  border-color: rgba(199, 177, 152, 0.25);
+}
+
+.stat-card .stat-number {
+  font-size: 36px;
+  font-weight: 800;
+  margin-bottom: 8px;
+  line-height: 1;
+  letter-spacing: -1px;
+  color: var(--text-primary);
+}
+
+.stat-card .stat-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ========== 按钮样式 ========== */
+.el-button--primary {
+  background: var(--accent-primary) !important;
+  border: none !important;
+  border-radius: 10px !important;
+  padding: 10px 20px !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  transition: all 0.2s ease !important;
+  color: white !important;
+}
+
+.el-button--primary:hover {
+  filter: brightness(1.1) !important;
+  color: white !important;
+}
+
+.el-button--default {
+  background: var(--bg-secondary) !important;
+  border: 1px solid var(--border-color) !important;
+  border-radius: 10px !important;
+  padding: 10px 20px !important;
+  font-weight: 500 !important;
+  color: var(--text-primary) !important;
+}
+
+.el-button--default:hover {
+  background: var(--progress-bg) !important;
+  border-color: var(--accent-primary) !important;
+  color: var(--text-primary) !important;
+}
+
+.el-button--danger {
+  border-radius: 10px !important;
+}
+
+/* ========== 表格样式 ========== */
+.el-table {
+  background: transparent;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.el-table th {
+  background: var(--bg-secondary) !important;
+  color: var(--text-secondary) !important;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.el-table td {
+  background: transparent !important;
+  color: var(--text-primary) !important;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.el-table tr:hover > td {
+  background: var(--progress-bg) !important;
+}
+
+/* ========== 进度条 ========== */
+.el-progress-bar__outer {
+  border-radius: 8px;
+  background-color: var(--progress-bg);
+}
+
+.el-progress-bar__inner {
+  border-radius: 8px;
+  background: var(--accent-primary);
+}
+
+/* ========== 输入框 ========== */
+.el-input__wrapper {
+  background: var(--input-bg) !important;
+  border: 1px solid var(--border-color) !important;
+  border-radius: 10px !important;
+  box-shadow: none !important;
+  transition: all 0.2s ease;
+}
+
+.el-input__wrapper:hover {
+  border-color: rgba(199, 177, 152, 0.5) !important;
+}
+
+.el-input__wrapper.is-focus {
+  border-color: rgba(199, 177, 152, 0.8) !important;
+  box-shadow: 0 0 0 3px var(--progress-bg) !important;
+}
+
+.el-input__inner {
+  color: var(--text-primary) !important;
+}
+
+.el-input__inner::placeholder {
+  color: var(--text-secondary) !important;
+}
+
+/* ========== 响应式 ========== */
+@media (max-width: 768px) {
+  .main-content {
+    margin-left: 0;
+    padding: 16px;
+  }
+
+  .sidebar {
+    bottom: 0;
+    top: auto;
+    height: auto;
+    width: 100%;
+    flex-direction: row;
+    padding: 8px 12px;
+    border-right: none;
+    border-top: 1px solid var(--border-color);
+  }
+
+  .sidebar-logo {
+    margin-bottom: 0;
+    margin-right: 12px;
+  }
+
+  .sidebar-nav {
+    flex-direction: row;
+    gap: 4px;
+    padding: 0;
+  }
+
+  .nav-tooltip {
+    display: none;
+  }
+
+  .sidebar-bottom {
+    border-top: none;
+    border-left: 1px solid var(--border-color);
+    padding-top: 0;
+    padding-left: 12px;
+    width: auto;
+  }
+}

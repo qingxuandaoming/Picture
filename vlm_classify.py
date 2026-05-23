@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-图片分类模块 v7.0.2 - 配置文件分离
+图片分类模块 v7.0.3 - 配置文件分离
 
 核心改进：
 1. 按内容语义分类，废除来源分类（B站/通讯）
@@ -12,30 +12,29 @@
 """
 
 import shutil
+import json
 from pathlib import Path
 from PIL import Image
 from collections import defaultdict
+import platformdirs
 
-# ===== 新分类体系（18个）=====
-CATEGORIES = [
+# ===== 默认分类体系（18个）=====
+DEFAULT_CATEGORIES = [
     "人像写真", "风景自然", "插画绘画", "艺术风格", "AI生成",
     "学习资料", "好词好句", "聊天记录", "影视动漫",
     "海报设计", "表情包梗图", "动物萌宠", "美食生活",
     "软件界面", "横屏", "1比1", "照片", "其他",
 ]
 
-# 旧分类名 → 扫描时仍需包含，以便迁移
-LEGACY_CATEGORIES = [
+# 默认旧分类名 → 扫描时仍需包含，以便迁移
+DEFAULT_LEGACY_CATEGORIES = [
     "AI生成图片", "B站图片", "人像", "截图", "插画艺术",
     "通讯图片", "风景", "厚涂", "视频截图", "知识点截屏",
     "好词好句", "海报设计",
     "111", "DCIM",
 ]
 
-# 扫描时的完整目录列表 = 新分类 + 旧分类（去重）
-SCAN_CATEGORIES = list(dict.fromkeys(CATEGORIES + LEGACY_CATEGORIES))
-
-CATEGORY_KEYWORDS = {
+DEFAULT_CATEGORY_KEYWORDS = {
     "人像写真": {
         "keywords": ["人物", "人像", "人脸", "自拍", "肖像", "女孩", "男孩", "美女", "帅哥",
                      "模特", "少女", "少年", "儿童", "男生", "女生", "男子", "女子",
@@ -178,6 +177,60 @@ FILENAME_STRONG_FEATURES = {
     "聊天记录": ["wx_camera", "mmexport", "wechat", "wx_", "qq_image", "qq_pic",
                 "qq_", "tim_", "weixin", "com.tencent.mm", "com.tencent.mobileqq"],
 }
+
+# 动态状态变量
+CATEGORIES = []
+LEGACY_CATEGORIES = []
+SCAN_CATEGORIES = []
+CATEGORY_KEYWORDS = {}
+
+def get_data_dir():
+    """获取数据目录路径（操作系统标准应用数据目录）"""
+    data_dir = Path(platformdirs.user_data_dir("VLM_Renamer", "AI_Renamer"))
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir
+
+def load_categories():
+    global CATEGORIES, LEGACY_CATEGORIES, SCAN_CATEGORIES, CATEGORY_KEYWORDS
+    data_dir = get_data_dir()
+    categories_file = data_dir / "categories.json"
+    
+    if categories_file.exists():
+        try:
+            with open(categories_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                CATEGORIES = data.get("categories", DEFAULT_CATEGORIES)
+                LEGACY_CATEGORIES = data.get("legacy_categories", DEFAULT_LEGACY_CATEGORIES)
+                CATEGORY_KEYWORDS = data.get("category_keywords", DEFAULT_CATEGORY_KEYWORDS)
+        except Exception as e:
+            print(f"⚠️ 加载 categories.json 失败: {e}，使用默认分类配置")
+            CATEGORIES = DEFAULT_CATEGORIES.copy()
+            LEGACY_CATEGORIES = DEFAULT_LEGACY_CATEGORIES.copy()
+            CATEGORY_KEYWORDS = DEFAULT_CATEGORY_KEYWORDS.copy()
+    else:
+        CATEGORIES = DEFAULT_CATEGORIES.copy()
+        LEGACY_CATEGORIES = DEFAULT_LEGACY_CATEGORIES.copy()
+        CATEGORY_KEYWORDS = DEFAULT_CATEGORY_KEYWORDS.copy()
+        save_categories()  # 生成默认配置
+        
+    SCAN_CATEGORIES = list(dict.fromkeys(CATEGORIES + LEGACY_CATEGORIES))
+
+def save_categories():
+    data_dir = get_data_dir()
+    categories_file = data_dir / "categories.json"
+    data = {
+        "categories": CATEGORIES,
+        "legacy_categories": LEGACY_CATEGORIES,
+        "category_keywords": CATEGORY_KEYWORDS
+    }
+    try:
+        with open(categories_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ 保存 categories.json 失败: {e}")
+
+# 初始化加载
+load_categories()
 
 
 def suggest_category(description, original_category, img_path=None, vlm_category=None):
@@ -405,7 +458,10 @@ def run_classification_task(base_dir=r"e:\Picture"):
 
 
 def get_default_base_dir():
-    config_file = Path(__file__).parent / "config.json"
+    import sys
+    from pathlib import Path
+    data_dir = get_data_dir()
+    config_file = data_dir / "config.json"
     if config_file.exists():
         import json
         try:

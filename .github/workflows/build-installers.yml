@@ -1,0 +1,101 @@
+name: Build Cross-Platform Installers
+
+on:
+  push:
+    tags:
+      - 'v*'  # 只有推送形如 v1.7.0 的 tag 时触发发布
+  workflow_dispatch: # 允许在 Actions 页面手动点击触发
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Build Frontend
+        run: |
+          cd frontend
+          npm install
+          npm run build
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller platformdirs
+
+      - name: Build with PyInstaller
+        run: pyinstaller VLM_Renamer_1.7.0.spec
+
+      - name: Build Windows Installer (Inno Setup)
+        if: runner.os == 'Windows'
+        run: |
+          # iscc (Inno Setup Compiler) 默认安装在 GitHub Actions 的 Windows runner 中
+          iscc installer_windows.iss
+
+      - name: Build macOS DMG
+        if: runner.os == 'macOS'
+        run: |
+          brew install create-dmg
+          create-dmg \
+            --volname "VLM_Renamer" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "VLM_Renamer_1.7.0.app" 200 190 \
+            --hide-extension "VLM_Renamer_1.7.0.app" \
+            --app-drop-link 400 190 \
+            "dist/VLM_Renamer_macOS.dmg" \
+            "dist/VLM_Renamer_1.7.0.app"
+
+      - name: Package Linux Binary
+        if: runner.os == 'Linux'
+        run: |
+          cd dist
+          tar -czvf VLM_Renamer_Linux.tar.gz VLM_Renamer_1.7.0
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: installers-${{ runner.os }}
+          path: |
+            dist/installers/*.exe
+            dist/*.dmg
+            dist/*.tar.gz
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: artifacts
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/**/*.exe
+            artifacts/**/*.dmg
+            artifacts/**/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

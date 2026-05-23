@@ -1,16 +1,19 @@
 # AGENTS.md — 图片智能重命名和分类项目
 
 > 本文件供 AI 编码助手阅读。项目所有代码、注释及交互界面均使用中文。
-> 当前版本：**v7.0.3**
+> 当前版本：**v1.7.0**
 
 ---
 
 ## 版本号规则
 
-- **小修改**（修 bug、补充少量关键词等）：更新后位，如 `7.0.0` → `7.0.1`
-- **大更改**（新增分类、重构核心逻辑等）：更新主/次版本号，如 `7.0.1` → `7.1.0` 或 `8.0.0`
+初始版本为 1.6.0，其中 A.B.C 的命名规则如下：
+1. C 表示 Bug 修改
+2. B 表示小功能更新
+3. A 表示大版本更新
 
-代码中通过全局变量 `VERSION` 声明当前版本，每次修改请同步更新脚本顶部注释与 `AGENTS.md`。
+**【AI 编码助手必读规范】**：
+代码中通过全局变量 `VERSION` 声明当前版本，**AI 在进行任何代码修改后，都必须遵循上述规则自动递增并更新版本号，无需用户提示**。修改时请同步更新脚本顶部注释、`AGENTS.md` 以及 `CLAUDE.md`，并使用新版本号生成打包文件。
 
 ---
 
@@ -56,22 +59,41 @@ pip install Pillow requests
 ## 项目结构
 
 ```
-E:\Picture\
-├── vlm_rename_v5.py          # 主程序（VLM重命名+分类）
-├── vlm_classify.py           # 分类模块（可独立运行迁移任务）
-├── config.json               # 配置文件（本地目录和API Key等敏感信息）
-├── config.example.json       # 配置模板
-├── rename_log.json           # 处理日志
-├── processed_files.txt       # 旧版去重记录
-├── processed_md5.txt         # MD5 去重记录
-├── .venv\                    # Python 虚拟环境
+E:\Picture\                        # 照片根目录 (BASE_DIR)
+├── _app\                          # 所有程序文件
+│   ├── .venv\                     # Python 虚拟环境（隐藏）
+│   ├── .git\                      # Git 仓库（隐藏）
+│   ├── .idea\                     # IDE 配置（隐藏）
+│   ├── .claude\                   # 助手配置（隐藏）
+│   ├── vlm_rename_v5.py           # 主程序（VLM重命名+分类）
+│   ├── vlm_classify.py            # 分类模块（可独立运行迁移任务）
+│   ├── main.py                    # FastAPI 后端（Web界面）
+│   ├── schemas.py                 # 数据结构定义
+│   ├── fix_md5.py                 # MD5去重修复工具
+│   ├── config.json                # 配置文件（API Key等敏感信息）
+│   ├── config.example.json        # 配置模板
+│   ├── requirements.txt           # 依赖列表
+│   ├── start.bat / start.ps1      # 启动脚本
+│   ├── VLM_Renamer_1.7.0.spec     # PyInstaller 打包配置
+│   ├── frontend\                  # 前端源码
+│   ├── dist\                      # 打包产物
+│   └── AGENTS.md / CLAUDE.md / README.md / LICENSE
 │
-├── 人像写真\                 # 18 个新分类目录
+├── _data\                         # 运行时数据目录（自动创建）
+│   ├── rename_log.json            # 处理日志
+│   ├── processed_files.txt        # 旧版去重记录
+│   ├── processed_md5.txt          # MD5 去重记录
+│   ├── error_log.txt              # 错误日志
+│   ├── task_stats.json            # 任务统计
+│   ├── categories.json            # 分类配置
+│   └── .uploads\                  # 上传缓存（隐藏）
+│
+├── 人像写真\                      # 18 个新分类目录
 ├── 风景自然\
 ├── 插画绘画\
-├── 艺术风格\                 # 油画/厚涂/抽象/水墨等
+├── 艺术风格\
 ├── AI生成\
-├── 学习资料\                 # 笔记+考题合并
+├── 学习资料\
 ├── 好词好句\
 ├── 聊天记录\
 ├── 影视动漫\
@@ -80,29 +102,32 @@ E:\Picture\
 ├── 动物萌宠\
 ├── 美食生活\
 ├── 软件界面\
-├── 横屏\                     # 16:9 比例（壁纸素材，优先级最高）
-├── 1比1\                     # 1:1 方形（头像素材，优先级最高）
-├── 照片\                     # 相机直出兜底
+├── 横屏\                        # 16:9 比例（壁纸素材）
+├── 1比1\                        # 1:1 方形（头像素材）
+├── 照片\                        # 相机直出兜底
 └── 其他\
 ```
 
-> **注意**：日志文件和目标路径依赖 `config.json` 中的 `base_dir` 配置，请确保在运行前已正确配置你的本地绝对路径（例如 Windows 下的 `e:\Picture`）。
+> **目录分离设计**：所有程序文件在 `_app/`，运行时数据在 `_data/`，照片目录直接在根目录下。程序通过 `config.json` 中的 `base_dir` 字段定位照片根目录。
 
 ---
 
 ## 构建与运行命令
 
-本项目无需编译，直接解释执行。
+本项目无需编译，直接解释执行。代码和虚拟环境均在 `_app/` 目录下。
 
 ```bash
-# 1. 激活虚拟环境
+# 1. 进入应用目录
+cd _app
+
+# 2. 激活虚拟环境
 .\.venv\Scripts\activate
 
-# 2. 运行主程序
+# 3. 运行主程序
 python vlm_rename_v5.py
 
-# 可选：通过命令行参数传入批次号（脚本中 CURRENT_BATCH 的默认值可被覆盖）
-python vlm_rename_v5.py 2
+# 或使用启动脚本一键启动前后端
+.\start.bat
 ```
 
 ### 运行时的交互流程
@@ -176,11 +201,12 @@ python vlm_rename_v5.py 2
 
 ---
 
-## 分类体系（v7.0）
+## 分类体系 (可动态配置)
 
-18 个分类，按**内容语义**划分（废除了旧版按来源的B站/通讯分类）：
+现在所有的分类都存储在 `categories.json` 中，默认有18个初始分类。
+下面是默认分类，可以通过前端配置界面进行调整：
 
-| 分类 | 说明 | 判定方式 |
+| 默认分类 | 说明 | 判定方式 |
 |------|------|---------|
 | 人像写真 | 真人人像、明星、coser、自拍 | VLM + 关键词 |
 | 风景自然 | 风景、城市夜景、星空 | VLM + 关键词 |
@@ -221,9 +247,9 @@ python vlm_rename_v5.py 2
 本项目**没有单元测试或自动化测试框架**。验证方式以手动运行为主：
 
 1. 运行脚本，观察终端统计输出（处理数、重分类数、错误数、跳过数）；
-2. 检查 `rename_log.json` 是否正确追加记录；
+2. 检查 `_data/rename_log.json` 是否正确追加记录；
 3. 检查目标目录下文件是否按预期重命名和移动；
-4. 若出现错误，查看同目录下的 `error_log.txt`（运行前会被自动清空）。
+4. 若出现错误，查看 `_data/error_log.txt`（运行前会被自动清空）。
 
 ---
 
@@ -240,9 +266,9 @@ python vlm_rename_v5.py 2
 
 | 现象 | 排查建议 |
 |------|---------|
-| 启动时报路径不存在 | 检查 `BASE_DIR`、`LOG_FILE`、`TEMP_FILE`、`MD5_FILE`、`ERROR_LOG` 中的 Windows 绝对路径在本地是否有效 |
-| 所有图片都被跳过 | 检查 `processed_files.txt` 和 `processed_md5.txt` 是否被意外清空或覆盖 |
-| API 持续报错 | 检查 API Key 是否过期；检查 `consecutive_failures` 是否已达上限；查看 `error_log.txt` |
+| 启动时报路径不存在 | 检查 `config.json` 中的 `base_dir` 路径是否有效，`_data/` 目录会自动创建 |
+| 所有图片都被跳过 | 检查 `_data/processed_files.txt` 和 `_data/processed_md5.txt` 是否被意外清空或覆盖 |
+| API 持续报错 | 检查 API Key 是否过期；检查 `consecutive_failures` 是否已达上限；查看 `_data/error_log.txt` |
 | 处理速度极慢 | 默认使用双账号并发 + 8 线程 MD5 预扫描，瓶颈通常在 API 响应时间；可尝试切换账号或调整 `BATCH_SIZE` |
 | 虚拟环境缺少依赖 | 在 `.venv` 中手动 `pip install Pillow requests` |
 
@@ -254,7 +280,12 @@ python vlm_rename_v5.py 2
 |------|------|
 | `vlm_rename_v5.py` | 主程序：VLM调用、重命名、多线程调度 |
 | `vlm_classify.py` | 分类模块：分类体系定义、分类决策逻辑、独立迁移任务 |
-| `rename_log.json` | 人类可读的 JSON 处理历史，支持审计 |
-| `processed_files.txt` | 旧版去重白名单，纯文本，一行一条 |
-| `processed_md5.txt` | 新版 MD5 去重白名单，格式 `md5|path` |
+| `main.py` | FastAPI 后端：Web界面API、批量任务调度 |
+| `schemas.py` | 数据结构定义（Pydantic模型） |
+| `fix_md5.py` | MD5去重记录修复工具 |
+| `_data/rename_log.json` | 人类可读的 JSON 处理历史，支持审计 |
+| `_data/processed_files.txt` | 旧版去重白名单，纯文本，一行一条 |
+| `_data/processed_md5.txt` | 新版 MD5 去重白名单，格式 `md5|path` |
+| `_data/categories.json` | 动态分类配置 |
+| `_data/task_stats.json` | 任务统计持久化 |
 | `.venv/pyvenv.cfg` | 虚拟环境元数据，指明 Python 3.14 |

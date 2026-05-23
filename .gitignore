@@ -22,8 +22,33 @@
 # 开源协议
 !LICENSE
 
+# 前端源码
+!frontend/
+!frontend/**
+frontend/node_modules/
+frontend/dist/
+
+# CI/CD
+!.github/
+!.github/**
+
+# 打包与依赖配置
+!installer_windows.iss
+!requirements.txt
+!*.spec
+!start.bat
+!start.ps1
+
 # === 强制忽略以下目录 ===
 .venv/
 __pycache__/
 .idea/
 .uploads/
+_data/
+build/
+dist/
+.cache/
+.claude/
+
+# === 强制忽略以下文件 ===
+config.json

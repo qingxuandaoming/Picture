@@ -1,17 +1,28 @@
 from fastapi import FastAPI, HTTPException, Body
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 import json
 import os
+import re
+import shutil
 import threading
 import time
 import uuid
+import urllib.parse
+import hashlib
+import sys
+import webbrowser
 from typing import List, Dict, Optional
+from PIL import Image
+import platformdirs
 
 from schemas import (
     BaseResponse, ConfigUpdate, ImageAnalyzeRequest, ImageAnalyzeResponse,
-    BatchStartRequest, BatchProgressResponse, CategoryInfo
+    BatchStartRequest, BatchProgressResponse, CategoryInfo,
+    ImageRenameRequest, ImageMoveRequest, ImageDeleteRequest,
+    CategoryConfigUpdate, AiAssistRequest
 )
 from vlm_rename_v5 import load_config, get_account_info, analyze_image, process_single_image_api, collect_images, CATEGORIES
 from vlm_classify import CATEGORIES as ALL_CATEGORIES, suggest_category, check_ratio_category
@@ -27,65 +38,184 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-CONFIG_FILE = Path(__file__).parent / "config.json"
-config = load_config()
-BASE_DIR = Path(config["base_dir"])
-LOG_FILE = BASE_DIR / "rename_log.json"
+USER_DATA_DIR = Path(platformdirs.user_data_dir("VLM_Renamer", "AI_Renamer"))
+USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+CONFIG_FILE = USER_DATA_DIR / "config.json"
 
-# 静态文件服务
-if BASE_DIR.exists():
-    app.mount("/images", StaticFiles(directory=str(BASE_DIR)), name="images")
+def get_base_dir() -> Path:
+    try:
+        cfg = load_config()
+        return Path(cfg.get("base_dir", r"e:\Picture"))
+    except Exception:
+        return Path(r"e:\Picture")
+
+def get_log_file() -> Path:
+    return USER_DATA_DIR / "rename_log.json"
+
+def load_logs(log_file_path: Path) -> list:
+    """安全地读取混合格式（JSON 数组 + 后来追加的 JSONL）的日志文件"""
+    if not log_file_path.exists():
+        return []
+    try:
+        with open(log_file_path, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+    except Exception:
+        return []
+    
+    if not content:
+        return []
+        
+    logs = []
+    if content.startswith('['):
+        try:
+            logs = json.loads(content)
+            if isinstance(logs, list):
+                return logs
+        except Exception:
+            pass
+        
+        # 匹配第一个 JSON 数组结束 ']' 与下一个 JSON 对象的开始 '{' 之间的边界
+        match = re.search(r'\]\s*\{', content)
+        if match:
+            boundary = match.start()
+            array_part = content[:boundary+1]
+            jsonl_part = content[boundary+1:]
+        else:
+            array_part = content
+            jsonl_part = ""
+            
+        try:
+            logs = json.loads(array_part)
+            if not isinstance(logs, list):
+                logs = []
+        except Exception:
+            logs = []
+            
+        if jsonl_part:
+            for line in jsonl_part.split('\n'):
+                line = line.strip()
+                if line:
+                    try:
+                        logs.append(json.loads(line))
+                    except Exception:
+                        pass
+        return logs
+    else:
+        logs = []
+        for line in content.split('\n'):
+            line = line.strip()
+            if line:
+                try:
+                    logs.append(json.loads(line))
+                except Exception:
+                    pass
+        return logs
+
 
 # 任务存储
 tasks = {}
 tasks_lock = threading.Lock()
 
+# ===== 任务统计持久化 =====
+task_stats_lock = threading.Lock()
+
+def _get_task_stats_file() -> Path:
+    """获取任务统计文件路径"""
+    return USER_DATA_DIR / "task_stats.json"
+
+def load_task_stats():
+    """加载任务统计"""
+    stats_file = _get_task_stats_file()
+    if stats_file.exists():
+        try:
+            with open(stats_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "total_processed": 0,
+        "total_success": 0,
+        "total_errors": 0,
+        "total_renamed": 0,
+        "total_reclassified": 0,
+        "total_skipped": 0,
+        "last_updated": None
+    }
+
+def save_task_stats(stats):
+    """保存任务统计"""
+    with task_stats_lock:
+        stats["last_updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            stats_file = _get_task_stats_file()
+            with open(stats_file, "w", encoding="utf-8") as f:
+                json.dump(stats, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"保存任务统计失败: {e}")
+
+def update_task_stats(processed=0, success=0, errors=0, renamed=0, reclassified=0, skipped=0):
+    """更新任务统计"""
+    stats = load_task_stats()
+    stats["total_processed"] += processed
+    stats["total_success"] += success
+    stats["total_errors"] += errors
+    stats["total_renamed"] += renamed
+    stats["total_reclassified"] += reclassified
+    stats["total_skipped"] += skipped
+    save_task_stats(stats)
+    return stats
+
 # ===== 任务处理函数 =====
 def process_batch_task(task_id: str, base_dir: str, account_index: int, max_process: Optional[int],
                        auto_rename: bool, auto_move: bool, task_type: str = "rename"):
     """后台批量处理任务"""
-    try:
-        config = load_config()
-        account_info = get_account_info(config, account_index)
+    import queue
+    # 强制热加载 config.json 及 vlm_rename_v5 的全局变量
+    from vlm_rename_v5 import load_global_config, is_processed, ACCOUNTS, process_single_image_api, error_flag, retry_count, MAX_RETRIES, log_lock
+    load_global_config()
 
+    try:
         if base_dir:
             task_base_dir = Path(base_dir)
         else:
-            task_base_dir = Path(config["base_dir"])
+            task_base_dir = get_base_dir()
+
+        if not task_base_dir.exists():
+            raise FileNotFoundError(f"指定的处理根目录不存在: {task_base_dir}")
 
         # 收集图片
-        images = collect_images(str(task_base_dir)) if max_process is None else collect_images(str(task_base_dir))[:max_process]
+        images = collect_images(str(task_base_dir))
 
-        total = len(images)
+        if task_type == "classify":
+            # 规则分类任务 (对应 vlm_classify.py)
+            batch_images = images if (max_process is None or max_process <= 0) else images[:max_process]
+            total = len(batch_images)
 
-        with tasks_lock:
-            tasks[task_id] = {
-                "id": task_id,
-                "name": "规则分类任务" if task_type == "classify" else "VLM重命名任务",
-                "status": "processing",
-                "progress": 0,
-                "create_time": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "total": total,
-                "processed": 0,
-                "renamed": 0,
-                "reclassified": 0,
-                "errors": 0,
-                "skipped": 0,
-                "results": []
-            }
+            with tasks_lock:
+                if task_id in tasks:
+                    tasks[task_id]["total"] = total
+                    tasks[task_id]["name"] = "规则分类任务"
 
-        for idx, img_info in enumerate(images):
-            img_path = img_info["path"]
-            original_cat = img_info["original_category"]
+            if total == 0:
+                with tasks_lock:
+                    tasks[task_id]["status"] = "completed"
+                    tasks[task_id]["progress"] = 100
+                return
 
-            try:
-                if task_type == "classify":
-                    # 规则分类
+            for idx, img_info in enumerate(batch_images):
+                img_path = img_info["path"]
+                original_cat = img_info["original_category"]
+
+                with tasks_lock:
+                    if "processing_files" not in tasks[task_id]:
+                        tasks[task_id]["processing_files"] = []
+                    tasks[task_id]["processing_files"].append(str(img_path.name))
+
+                try:
                     ratio_cat = check_ratio_category(img_path)
                     if ratio_cat:
                         new_cat = ratio_cat
                     else:
-                        # 使用默认描述进行分类
                         new_cat = suggest_category("image", original_cat, img_path, vlm_category=None)
 
                     # 移动文件
@@ -105,44 +235,213 @@ def process_batch_task(task_id: str, base_dir: str, account_index: int, max_proc
                     with tasks_lock:
                         tasks[task_id]["processed"] += 1
                         tasks[task_id]["results"].append({
-                            "path": str(img_path),
-                            "category": new_cat
+                            "success": True,
+                            "original_path": str(img_path),
+                            "original_category": original_cat,
+                            "category": new_cat,
+                            "new_name": img_path.name
                         })
-                else:
-                    # VLM重命名
-                    result = process_single_image_api(
-                        img_info, account_info, auto_rename=auto_rename, auto_move=auto_move
-                    )
+                except Exception as e:
+                    with tasks_lock:
+                        tasks[task_id]["errors"] += 1
+                        tasks[task_id]["results"].append({
+                            "success": False,
+                            "original_path": str(img_path),
+                            "original_category": original_cat,
+                            "error": str(e)
+                        })
+                finally:
+                    with tasks_lock:
+                        if str(img_path.name) in tasks[task_id]["processing_files"]:
+                            tasks[task_id]["processing_files"].remove(str(img_path.name))
+
+                with tasks_lock:
+                    tasks[task_id]["progress"] = min(100, int((idx + 1) / total * 100))
+
+            with tasks_lock:
+                tasks[task_id]["status"] = "completed"
+                tasks[task_id]["progress"] = 100
+                # 更新持久化统计
+                update_task_stats(
+                    processed=tasks[task_id]["processed"],
+                    success=tasks[task_id]["processed"],
+                    errors=tasks[task_id]["errors"],
+                    renamed=0,
+                    reclassified=tasks[task_id]["reclassified"],
+                    skipped=tasks[task_id]["skipped"]
+                )
+
+        else:
+            # VLM 智能重命名任务 (对应 vlm_rename_v5.py)
+            # 1. 用多线程过滤已处理图片（8线程并行MD5计算）
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            pending_images = []
+            skipped_count = 0
+
+            def check_img_processed(img):
+                if is_processed(img["path"], img["original_category"]):
+                    return True, img
+                return False, img
+
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                futures = [executor.submit(check_img_processed, img) for img in images]
+                for future in as_completed(futures):
+                    is_skipped, img = future.result()
+                    if is_skipped:
+                        skipped_count += 1
+                    else:
+                        pending_images.append(img)
+
+            # 2. 限制处理数量
+            if max_process is not None and max_process > 0:
+                batch_images = pending_images[:max_process]
+            else:
+                batch_images = pending_images
+
+            total = len(batch_images)
+
+            with tasks_lock:
+                if task_id in tasks:
+                    tasks[task_id]["total"] = total
+                    tasks[task_id]["skipped"] = skipped_count
+                    tasks[task_id]["name"] = "VLM重命名任务"
+
+            if total == 0:
+                with tasks_lock:
+                    tasks[task_id]["status"] = "completed"
+                    tasks[task_id]["progress"] = 100
+                # 任务完成，JSONL模式下无需全量落盘
+
+            task_queue = queue.Queue()
+            for idx, img_info in enumerate(batch_images):
+                task_queue.put((idx, img_info))
+
+            # 3. 确定并发账号
+            run_accounts = []
+            if account_index == 1:
+                if len(ACCOUNTS) >= 1:
+                    run_accounts = [ACCOUNTS[0]]
+            elif account_index == 2:
+                if len(ACCOUNTS) >= 2:
+                    run_accounts = [ACCOUNTS[1]]
+                elif len(ACCOUNTS) >= 1:
+                    run_accounts = [ACCOUNTS[0]]
+            else:
+                run_accounts = ACCOUNTS
+
+            if not run_accounts:
+                run_accounts = ACCOUNTS[:1] if ACCOUNTS else []
+
+            error_flag.clear()
+            retry_count.clear()
+            retry_lock = threading.Lock()
+
+            def web_worker_thread(account_info):
+                while True:
+                    if error_flag.is_set():
+                        break
+                    try:
+                        task = task_queue.get(timeout=1)
+                    except queue.Empty:
+                        continue
+                    if task is None:
+                        break
+
+                    idx, img_info = task
+                    img_path = img_info["path"]
 
                     with tasks_lock:
-                        if result.get("skipped"):
-                            tasks[task_id]["skipped"] += 1
-                        elif not result.get("success"):
-                            tasks[task_id]["errors"] += 1
+                        if "processing_files" not in tasks[task_id]:
+                            tasks[task_id]["processing_files"] = []
+                        tasks[task_id]["processing_files"].append(str(img_path.name))
+
+                    try:
+                        res = process_single_image_api(
+                            img_info, account_info, auto_rename=auto_rename, auto_move=auto_move
+                        )
+
+                        if res.get("skipped"):
+                            with tasks_lock:
+                                tasks[task_id]["skipped"] += 1
+                                tasks[task_id]["processed"] += 1
+                                tasks[task_id]["results"].append(res)
+                            task_queue.task_done()
+                        elif res.get("success"):
+                            with tasks_lock:
+                                tasks[task_id]["processed"] += 1
+                                if res.get("reclassified"):
+                                    tasks[task_id]["reclassified"] += 1
+                                if res.get("description"):
+                                    tasks[task_id]["renamed"] += 1
+                                tasks[task_id]["results"].append(res)
+                            task_queue.task_done()
+                            time.sleep(0.15)
                         else:
-                            tasks[task_id]["processed"] += 1
-                            if result.get("reclassified"):
-                                tasks[task_id]["reclassified"] += 1
-                            if result.get("description"):
-                                tasks[task_id]["renamed"] += 1
-                        tasks[task_id]["results"].append(result)
+                            # 失败，尝试大步重试
+                            with retry_lock:
+                                current_retries = retry_count.get(str(img_path), 0)
 
-            except Exception as e:
-                with tasks_lock:
-                    tasks[task_id]["errors"] += 1
-                    tasks[task_id]["results"].append({
-                        "path": str(img_path),
-                        "error": str(e)
-                    })
+                            if current_retries < MAX_RETRIES:
+                                with retry_lock:
+                                    retry_count[str(img_path)] = current_retries + 1
+                                task_queue.put((idx, img_info))
+                                task_queue.task_done()
+                            else:
+                                with tasks_lock:
+                                    tasks[task_id]["errors"] += 1
+                                    tasks[task_id]["results"].append(res)
+                                task_queue.task_done()
+                    except Exception as e:
+                        with tasks_lock:
+                            tasks[task_id]["errors"] += 1
+                            tasks[task_id]["results"].append({
+                                "success": False,
+                                "original_path": str(img_path),
+                                "original_category": img_info.get("original_category", "其他"),
+                                "error": f"线程内异常: {str(e)}"
+                            })
+                        task_queue.task_done()
+                    finally:
+                        with tasks_lock:
+                            if str(img_path.name) in tasks[task_id]["processing_files"]:
+                                tasks[task_id]["processing_files"].remove(str(img_path.name))
 
-            # 更新进度
+                    # 实时更新百分比进度
+                    with tasks_lock:
+                        processed_so_far = tasks[task_id]["processed"] + tasks[task_id]["errors"]
+                        if total > 0:
+                            tasks[task_id]["progress"] = min(100, int(processed_so_far / total * 100))
+
+            threads = []
+            for acc in run_accounts:
+                t = threading.Thread(target=web_worker_thread, args=(acc,))
+                t.daemon = True
+                t.start()
+                threads.append(t)
+
+            task_queue.join()
+
+            for _ in run_accounts:
+                task_queue.put(None)
+            for t in threads:
+                t.join(timeout=5)
+
+            # 4. JSONL模式下无需在此进行全量落盘
+
             with tasks_lock:
-                tasks[task_id]["progress"] = min(100, int((idx + 1) / total * 100))
-
-        # 任务完成
-        with tasks_lock:
-            tasks[task_id]["status"] = "completed"
-            tasks[task_id]["progress"] = 100
+                tasks[task_id]["status"] = "completed"
+                tasks[task_id]["progress"] = 100
+                # 更新持久化统计
+                # 成功数 = 处理数 - 错误数（避免 renamed + reclassified 重复计算同一张图片）
+                actual_success = tasks[task_id]["processed"] - tasks[task_id]["errors"]
+                update_task_stats(
+                    processed=tasks[task_id]["processed"],
+                    success=actual_success,
+                    errors=tasks[task_id]["errors"],
+                    renamed=tasks[task_id]["renamed"],
+                    reclassified=tasks[task_id]["reclassified"],
+                    skipped=tasks[task_id]["skipped"]
+                )
 
     except Exception as e:
         with tasks_lock:
@@ -157,6 +456,74 @@ def process_batch_task(task_id: str, base_dir: str, account_index: int, max_proc
                     "error": str(e),
                     "progress": 0
                 }
+
+# ===== 动态静态资源服务 =====
+@app.get("/images/{file_path:path}")
+async def serve_image(file_path: str):
+    """动态安全地提供图片文件服务，支持 base_dir 热加载并防止路径穿越攻击"""
+    try:
+        base_dir = get_base_dir()
+        decoded_path = urllib.parse.unquote(file_path)
+        full_path = (base_dir / decoded_path).resolve()
+        
+        # 安全验证：确保解析出的物理路径在当前图片根目录下
+        full_path.relative_to(base_dir.resolve())
+        
+        if not full_path.exists() or not full_path.is_file():
+            raise HTTPException(status_code=404, detail="图片不存在")
+            
+        return FileResponse(full_path)
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=403, detail="越权访问受限目录")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/thumbnail/{file_path:path}")
+async def serve_thumbnail(file_path: str):
+    """动态生成并缓存图片缩略图，大幅优化前端加载速度"""
+    try:
+        base_dir = get_base_dir()
+        decoded_path = urllib.parse.unquote(file_path)
+        full_path = (base_dir / decoded_path).resolve()
+        
+        # 安全验证：确保解析出的物理路径在当前图片根目录下
+        full_path.relative_to(base_dir.resolve())
+        
+        if not full_path.exists() or not full_path.is_file():
+            raise HTTPException(status_code=404, detail="图片不存在")
+            
+        # 缓存目录 (移至标准数据目录)
+        cache_dir = USER_DATA_DIR / ".cache" / "thumbnails"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 使用路径和修改时间的 MD5 作为缓存文件名
+        file_mtime = str(full_path.stat().st_mtime)
+        path_md5 = hashlib.md5((str(full_path) + file_mtime).encode('utf-8')).hexdigest()
+        cache_path = cache_dir / f"{path_md5}{full_path.suffix}"
+        
+        # 检查缓存是否存在
+        if cache_path.exists():
+            return FileResponse(cache_path)
+            
+        # 缓存不存在，使用 Pillow 压缩生成
+        with Image.open(full_path) as img:
+            # 转换为 RGB 模式（处理带 alpha 通道的 png 转 jpeg 等情况）
+            if img.mode in ('RGBA', 'P'):
+                img = img.convert('RGB')
+            # 缩放为最大 300x300 的缩略图，保持比例
+            img.thumbnail((300, 300))
+            # 保存到缓存
+            img.save(cache_path, quality=80)
+            
+        return FileResponse(cache_path)
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=403, detail="越权访问受限目录")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ===== 基础接口 =====
 @app.get("/api/health", response_model=BaseResponse)
@@ -186,9 +553,11 @@ async def update_config(config_update: ConfigUpdate = Body(...)):
         update_data = config_update.dict(exclude_unset=True)
         current_config.update(update_data)
 
-        # 写入配置文件
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        # 写入配置文件（原子操作，防损坏）
+        tmp_file = CONFIG_FILE.with_suffix('.tmp')
+        with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(current_config, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_file, CONFIG_FILE)
 
         return BaseResponse(msg="配置更新成功", data=current_config)
     except Exception as e:
@@ -197,14 +566,111 @@ async def update_config(config_update: ConfigUpdate = Body(...)):
 @app.get("/api/categories", response_model=BaseResponse)
 async def get_categories():
     """获取所有分类列表"""
+    import vlm_classify
     categories = []
-    for idx, cat in enumerate(ALL_CATEGORIES):
+    for idx, cat in enumerate(vlm_classify.CATEGORIES):
         categories.append({
             "name": cat,
             "priority": 0 if cat in ("横屏", "1比1") else 1,
             "description": ""
         })
     return BaseResponse(data=categories)
+
+@app.get("/api/categories/config", response_model=BaseResponse)
+async def get_categories_config():
+    """获取动态分类的配置（categories.json内容）"""
+    import vlm_classify
+    return BaseResponse(data={
+        "categories": vlm_classify.CATEGORIES,
+        "legacy_categories": vlm_classify.LEGACY_CATEGORIES,
+        "category_keywords": vlm_classify.CATEGORY_KEYWORDS
+    })
+
+@app.post("/api/categories/config", response_model=BaseResponse)
+async def update_categories_config(update_req: CategoryConfigUpdate = Body(...)):
+    """更新动态分类配置并保存到 categories.json"""
+    import vlm_classify
+    try:
+        vlm_classify.CATEGORIES = update_req.categories
+        vlm_classify.LEGACY_CATEGORIES = update_req.legacy_categories
+        vlm_classify.CATEGORY_KEYWORDS = update_req.category_keywords
+        vlm_classify.SCAN_CATEGORIES = list(dict.fromkeys(vlm_classify.CATEGORIES + vlm_classify.LEGACY_CATEGORIES))
+        vlm_classify.save_categories()
+        return BaseResponse(msg="分类配置更新成功")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"保存分类失败: {str(e)}")
+
+@app.post("/api/ai_assist/optimize", response_model=BaseResponse)
+async def ai_assist_optimize(req: AiAssistRequest = Body(...)):
+    """召唤 AI 自动完善分类关键词"""
+    import requests
+    from vlm_rename_v5 import get_account_info, load_config
+    try:
+        config = load_config()
+        # 找一个可用账号
+        account_info = None
+        for acc in config.get("accounts", []):
+            if "keys" in acc and acc["keys"]:
+                account_info = get_account_info(config, 0) # 简写为用第一个账号
+                break
+        
+        if not account_info:
+            raise Exception("没有可用的API账号配置")
+            
+        pro_model = config.get("assistant_model", "doubao-seed-2-0-pro-260215")
+        
+        prompt = f"""你是一个智能图片整理助手。用户新建了一个图片分类类别叫“{req.category_name}”。
+请根据这个类别名称，联想并生成用于匹配该类别图片的关键词(keywords)和文件名常见特征(filename_hints)。
+返回JSON格式：
+{{
+  "keywords": ["关键词1", "关键词2", ...],
+  "filename_hints": ["特征1", "特征2", ...]
+}}
+注意：只要JSON，不要其他文字。"""
+
+        headers = {
+            "Authorization": f"Bearer {account_info['keys'][0]}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "model": pro_model,
+            "messages": [
+                {"role": "system", "content": "你是一个有用的助手。"},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.5
+        }
+        
+        endpoint = account_info.get("endpoint", config.get("api_endpoint", "https://ark.cn-beijing.volces.com/api/v3/chat/completions"))
+        response = requests.post(endpoint, headers=headers, json=data, timeout=30)
+        response.raise_for_status()
+        resp_json = response.json()
+        
+        content = resp_json["choices"][0]["message"]["content"].strip()
+        import re
+        # 尝试提取被 markdown 包裹的代码块
+        match = re.search(r"```(?:json)?\s*(.*?)\s*```", content, re.DOTALL)
+        if match:
+            content = match.group(1).strip()
+        else:
+            # 尝试直接寻找大括号包裹的 JSON
+            match = re.search(r"(\{.*\})", content, re.DOTALL)
+            if match:
+                content = match.group(1).strip()
+                
+        result = json.loads(content)
+        
+        return BaseResponse(data=result, msg="AI 优化成功")
+    except Exception as e:
+        err_msg = str(e)
+        if hasattr(e, 'response') and getattr(e, 'response') is not None:
+            err_msg += f" Response: {e.response.text}"
+        import traceback
+        with open(str(USER_DATA_DIR / "ai_error.log"), "a", encoding="utf-8") as f:
+            f.write(f"========= AI ASSIST OPTIMIZE ERROR =========\n{traceback.format_exc()}\nResponse Data: {err_msg}\n============================================\n")
+        print(f"========= AI ASSIST OPTIMIZE ERROR =========\n{err_msg}\n============================================")
+        raise HTTPException(status_code=500, detail=f"AI 生成失败: {err_msg}")
 
 # ===== 图片处理接口 =====
 @app.post("/api/image/analyze", response_model=BaseResponse)
@@ -266,12 +732,290 @@ async def process_single_image(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"处理失败: {str(e)}")
 
+# ===== 交互式整理与文件操作接口 =====
+# 待处理图片缓存
+_pending_images_cache = None
+_cache_timestamp = 0
+CACHE_TTL = 30  # 缓存30秒
+
+@app.get("/api/images/pending", response_model=BaseResponse)
+async def get_pending_images(limit: int = 50, use_cache: bool = True):
+    """获取待处理的图片列表（未整理的图片）- 优化版，带缓存"""
+    try:
+        global _pending_images_cache, _cache_timestamp
+        
+        from vlm_rename_v5 import load_global_config, reload_dedup_records, is_processed
+        load_global_config()
+        
+        # 检查缓存是否有效
+        current_time = time.time()
+        if use_cache and _pending_images_cache is not None and (current_time - _cache_timestamp) < CACHE_TTL:
+            # 使用缓存，只返回限制数量
+            return BaseResponse(data=_pending_images_cache[:limit])
+        
+        # 重新加载去重记录
+        reload_dedup_records()
+        
+        base_dir = get_base_dir()
+        images = collect_images(str(base_dir))
+        
+        # 核心优化：按文件最后修改时间倒序排列。
+        # 因为未处理的图片通常是刚拷贝进来的新文件，这样排列能让程序优先检查新文件。
+        # 配合 limit 限制，只要找到足够数量的未处理图片就会立刻跳出循环，避免对几千张已处理老图片进行缓慢的 MD5 计算。
+        try:
+            images.sort(key=lambda x: x["path"].stat().st_mtime, reverse=True)
+        except Exception:
+            pass
+        
+        pending_list = []
+        for img in images:
+            img_path = img["path"]
+            original_cat = img["original_category"]
+            
+            # 判断是否已处理过
+            if not is_processed(img_path, original_cat):
+                # 构造相对路径供前端渲染预览
+                try:
+                    rel_path = img_path.relative_to(base_dir)
+                    rel_path_str = rel_path.as_posix()
+                except ValueError:
+                    rel_path_str = img_path.name
+                
+                pending_list.append({
+                    "name": img_path.name,
+                    "path": str(img_path),
+                    "relative_path": rel_path_str,
+                    "original_category": original_cat
+                })
+                if len(pending_list) >= limit:
+                    break
+        
+        # 更新缓存
+        _pending_images_cache = pending_list.copy()
+        _cache_timestamp = current_time
+        
+        return BaseResponse(data=pending_list)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取待处理图片失败: {str(e)}")
+
+@app.get("/api/categories/{category_name}/files", response_model=BaseResponse)
+async def get_category_files(category_name: str):
+    """获取特定分类目录下的图片列表"""
+    try:
+        base_dir = get_base_dir()
+        cat_dir = base_dir / category_name
+        
+        if not cat_dir.exists():
+            return BaseResponse(data=[])
+            
+        from vlm_rename_v5 import IMAGE_EXTS
+        
+        files_list = []
+        for f in cat_dir.iterdir():
+            if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
+                stat = f.stat()
+                try:
+                    rel_path = f.relative_to(base_dir)
+                    rel_path_str = rel_path.as_posix()
+                except ValueError:
+                    rel_path_str = f"{category_name}/{f.name}"
+                
+                files_list.append({
+                    "name": f.name,
+                    "path": str(f),
+                    "relative_path": rel_path_str,
+                    "size": round(stat.st_size / 1024, 2),  # KB
+                    "mtime": stat.st_mtime
+                })
+        
+        # 按修改时间倒序排列
+        files_list.sort(key=lambda x: x["mtime"], reverse=True)
+        return BaseResponse(data=files_list)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取分类文件失败: {str(e)}")
+
+@app.post("/api/image/rename", response_model=BaseResponse)
+async def rename_image(request: ImageRenameRequest = Body(...)):
+    """手动重命名图片，支持安全校验与同名防冲突"""
+    try:
+        base_dir = get_base_dir()
+        img_path = Path(request.image_path).resolve()
+        
+        # 安全性验证：必须在 base_dir 范围内，防止目录穿越
+        img_path.relative_to(base_dir.resolve())
+        
+        if not img_path.exists() or not img_path.is_file():
+            raise HTTPException(status_code=404, detail="源图片文件不存在")
+            
+        # 清理新文件名中的非法字符
+        new_name = request.new_name.strip()
+        new_name = re.sub(r'[\\/:*?"<>|]', '', new_name)
+        if not new_name:
+            raise HTTPException(status_code=400, detail="无效的新文件名")
+            
+        suffix = img_path.suffix
+        # 确保不重复拼接后缀
+        if new_name.lower().endswith(suffix.lower()):
+            new_name = new_name[:-len(suffix)]
+            
+        parent = img_path.parent
+        target_path = parent / f"{new_name}{suffix}"
+        
+        # 名字防冲突递增
+        counter = 1
+        while target_path.exists() and target_path.resolve() != img_path:
+            target_path = parent / f"{new_name}_{counter}{suffix}"
+            counter += 1
+            
+        # 如果新旧路径一致，不进行操作
+        if target_path.resolve() != img_path:
+            shutil.move(str(img_path), str(target_path))
+            
+        # 返回新文件的 relative_path 供前端即时渲染
+        try:
+            rel_path = target_path.relative_to(base_dir)
+            rel_path_str = rel_path.as_posix()
+        except ValueError:
+            rel_path_str = target_path.name
+            
+        return BaseResponse(
+            msg="重命名成功",
+            data={
+                "old_path": str(img_path),
+                "new_path": str(target_path),
+                "new_name": target_path.name,
+                "relative_path": rel_path_str
+            }
+        )
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=403, detail="越权访问受限目录")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"重命名失败: {str(e)}")
+
+@app.post("/api/image/move", response_model=BaseResponse)
+async def move_image(request: ImageMoveRequest = Body(...)):
+    """手动移动图片到新的分类目录下，支持同名递增防覆盖"""
+    try:
+        from vlm_rename_v5 import load_global_config
+        load_global_config()
+        
+        base_dir = get_base_dir()
+        img_path = Path(request.image_path).resolve()
+        
+        # 安全性验证：源文件必须在 base_dir 范围内
+        img_path.relative_to(base_dir.resolve())
+        
+        if not img_path.exists() or not img_path.is_file():
+            raise HTTPException(status_code=404, detail="源图片文件不存在")
+            
+        target_category = request.target_category.strip()
+        if target_category not in ALL_CATEGORIES:
+            raise HTTPException(status_code=400, detail="目标分类不存在")
+            
+        target_dir = base_dir / target_category
+        target_dir.mkdir(parents=True, exist_ok=True)
+        
+        filename = img_path.name
+        base_name = img_path.stem
+        suffix = img_path.suffix
+        
+        target_path = target_dir / filename
+        
+        # 防冲突递增
+        counter = 1
+        while target_path.exists() and target_path.resolve() != img_path:
+            target_path = target_dir / f"{base_name}_{counter}{suffix}"
+            counter += 1
+            
+        # 执行移动
+        if target_path.resolve() != img_path:
+            shutil.move(str(img_path), str(target_path))
+            
+            # 手动整理后，往去重文件中记录，确保 VLM 和规则分类不会再次拾取
+            from vlm_rename_v5 import record_processed, file_md5
+            try:
+                md5 = file_md5(str(target_path))
+                record_processed(f"{target_category}/{target_path.name}", md5)
+            except Exception as log_err:
+                print(f"写入手动移动日志失败: {log_err}")
+                
+        try:
+            rel_path = target_path.relative_to(base_dir)
+            rel_path_str = rel_path.as_posix()
+        except ValueError:
+            rel_path_str = f"{target_category}/{target_path.name}"
+            
+        return BaseResponse(
+            msg="移动成功",
+            data={
+                "old_path": str(img_path),
+                "new_path": str(target_path),
+                "new_name": target_path.name,
+                "relative_path": rel_path_str,
+                "category": target_category
+            }
+        )
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=403, detail="越权访问受限目录")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"移动失败: {str(e)}")
+
+@app.delete("/api/image", response_model=BaseResponse)
+async def delete_image(request: ImageDeleteRequest = Body(...)):
+    """手动删除图片文件，严格限制在 base_dir 范围内"""
+    try:
+        base_dir = get_base_dir()
+        img_path = Path(request.image_path).resolve()
+        
+        # 安全验证：文件必须在 base_dir 范围内，绝对防止目录穿越
+        img_path.relative_to(base_dir.resolve())
+        
+        if not img_path.exists() or not img_path.is_file():
+            raise HTTPException(status_code=404, detail="图片文件不存在")
+            
+        os.remove(img_path)
+        return BaseResponse(msg="图片删除成功", data={"deleted_path": str(img_path)})
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=403, detail="越权删除受限目录")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"删除图片失败: {str(e)}")
+
 # ===== 批量任务接口 =====
 @app.post("/api/batch/start", response_model=BaseResponse)
 async def start_batch_process(request: BatchStartRequest = Body(...)):
     """启动批量处理任务"""
     try:
+        # 检查是否已有运行中的批量任务
+        with tasks_lock:
+            for t in tasks.values():
+                if t.get("status") == "processing":
+                    raise HTTPException(status_code=400, detail="已有批量任务正在运行中，请等待其完成")
+
         task_id = str(uuid.uuid4())[:8]
+
+        # 同步初始化任务，防止前端轮询时任务不存在返回假数据
+        with tasks_lock:
+            tasks[task_id] = {
+                "id": task_id,
+                "name": "VLM重命名任务",
+                "status": "processing",
+                "progress": 0,
+                "create_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "total": 0,
+                "processed": 0,
+                "renamed": 0,
+                "reclassified": 0,
+                "errors": 0,
+                "skipped": 0,
+                "results": [],
+                "processing_files": []
+            }
 
         # 启动后台线程处理任务
         thread = threading.Thread(
@@ -284,6 +1028,8 @@ async def start_batch_process(request: BatchStartRequest = Body(...)):
         thread.start()
 
         return BaseResponse(data={"task_id": task_id}, msg="批量任务已启动")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"启动任务失败: {str(e)}")
 
@@ -295,7 +1041,31 @@ async def start_classify_task(
 ):
     """启动规则分类任务（对应vlm_classify.py）"""
     try:
+        # 检查是否已有运行中的批量任务
+        with tasks_lock:
+            for t in tasks.values():
+                if t.get("status") == "processing":
+                    raise HTTPException(status_code=400, detail="已有批量任务正在运行中，请等待其完成")
+
         task_id = str(uuid.uuid4())[:8]
+
+        # 同步初始化任务
+        with tasks_lock:
+            tasks[task_id] = {
+                "id": task_id,
+                "name": "规则分类任务",
+                "status": "processing",
+                "progress": 0,
+                "create_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "total": 0,
+                "processed": 0,
+                "renamed": 0,
+                "reclassified": 0,
+                "errors": 0,
+                "skipped": 0,
+                "results": [],
+                "processing_files": []
+            }
 
         thread = threading.Thread(
             target=process_batch_task,
@@ -305,6 +1075,8 @@ async def start_classify_task(
         thread.start()
 
         return BaseResponse(data={"task_id": task_id}, msg="规则分类任务已启动")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"启动任务失败: {str(e)}")
 
@@ -347,11 +1119,11 @@ async def get_all_tasks():
 async def get_logs(limit: int = 100, offset: int = 0):
     """获取处理日志"""
     try:
-        if not LOG_FILE.exists():
+        log_file = get_log_file()
+        if not log_file.exists():
             return BaseResponse(data=[])
 
-        with open(LOG_FILE, "r", encoding="utf-8") as f:
-            logs = json.load(f)
+        logs = load_logs(log_file)
 
         # 按时间倒序
         logs = sorted(logs, key=lambda x: x.get("timestamp", ""), reverse=True)
@@ -375,15 +1147,18 @@ async def get_stats():
         # 统计各分类文件数量
         category_stats = {}
         total_files = 0
-        processed_paths = set()
+        processed_md5s = set()  # MD5 去重集合
 
-        # 先统计已处理文件
-        if LOG_FILE.exists():
-            with open(LOG_FILE, "r", encoding="utf-8") as f:
-                logs = json.load(f)
-                for log in logs:
-                    if "original_path" in log:
-                        processed_paths.add(log["original_path"])
+        # 从 MD5 去重记录文件读取已处理记录
+        md5_file = base_dir / "_data" / "processed_md5.txt"
+        if md5_file.exists():
+            with open(md5_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        parts = line.split("|", 1)
+                        if len(parts) >= 1 and parts[0]:
+                            processed_md5s.add(parts[0])
 
         # 统计当前文件
         for cat in ALL_CATEGORIES:
@@ -396,17 +1171,77 @@ async def get_stats():
                         total_files += 1
                 category_stats[cat] = count
 
-        # 统计日志数量（已去重）
-        total_processed = len(processed_paths)
+        # 使用 MD5 去重后的已处理数量
+        total_processed = len(processed_md5s)
+
+        # 加载持久化的任务统计
+        persisted_stats = load_task_stats()
+
+        # 使用持久化统计
+        total_task_processed = persisted_stats["total_processed"]
+        total_task_success = persisted_stats["total_success"]
+        total_task_errors = persisted_stats["total_errors"]
+
+        # 计算成功率：成功数 / 总处理数 × 100%
+        # total_success 是成功处理的图片数，total_errors 是失败的图片数
+        # 成功率 = 成功数 / (成功数 + 失败数) × 100%
+        if total_task_processed > 0:
+            success_rate = round(total_task_success / total_task_processed * 100, 1)
+        else:
+            success_rate = 0
 
         return BaseResponse(data={
             "total_files": total_files,
             "total_processed": total_processed,
-            "category_stats": category_stats
+            "category_stats": category_stats,
+            "success_rate": success_rate,
+            "task_stats": {
+                "total_processed": total_task_processed,
+                "success": total_task_success,
+                "errors": total_task_errors
+            }
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取统计失败: {str(e)}")
 
+def get_frontend_dist() -> Path:
+    if getattr(sys, 'frozen', False):
+        return Path(sys._MEIPASS) / "frontend_dist"
+    else:
+        return Path(__file__).parent / "frontend" / "dist"
+
+frontend_dist = get_frontend_dist()
+if frontend_dist.exists():
+    # 静态资源挂载
+    assets_dir = frontend_dist / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+        
+    @app.get("/{catchall:path}")
+    def serve_spa(catchall: str):
+        file_path = frontend_dist / catchall
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(frontend_dist / "index.html")
+
 if __name__ == "__main__":
+    from vlm_rename_v5 import load_global_config, select_base_dir
+    
+    # 1. 触发初始向导
+    load_global_config()
+    
+    # 2. 触发目录选择框
+    select_base_dir()
+
+    # 3. 自动打开浏览器
+    def open_browser():
+        time.sleep(2)
+        try:
+            webbrowser.open("http://localhost:8000")
+        except Exception as e:
+            print(f"打开浏览器失败: {e}")
+
+    threading.Thread(target=open_browser, daemon=True).start()
+    
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

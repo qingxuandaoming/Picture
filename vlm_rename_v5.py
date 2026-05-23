@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-图片智能重命名和分类 - v7.0.3
+图片智能重命名和分类 - v7.1.0
 改进点:
 1. 重构分类体系 - 18个基于内容语义的分类，废除来源分类（B站/通讯）
 2. VLM直接输出分类 - prompt返回JSON格式(description+category)，不再纯靠关键词
@@ -9,6 +9,11 @@
 5. 照片作为兜底分类 - 优先分到其他类别
 6. 文件删除保护 / 线程异常捕获 / 失败重试(3次) / 多线程MD5扫描
 7. 账号选择 / 模型选择 / 处理数量选择
+
+v7.1.0 重构与系统优化:
+- 全局配置动态热加载，无需重启后端服务即可生效修改；
+- 引入去重数据文本数据库线程安全锁（db_lock），消除多线程冲突；
+- 配合后端重构以适配全新高可靠性 Web 多账号并发与指数退避重试队列引擎。
 
 v7.0.1 改进:
 - 错误处理增强：区分超时/HTTP错误/网络错误，打印具体错误原因
@@ -30,44 +35,223 @@ v7.0.2 改进:
 """
 
 # 当前版本号，每次修改请按上方规则同步更新
-VERSION = "7.0.3"
+VERSION = "1.7.0"
 import os, re, json, time, shutil, base64, requests, io, threading, sys, hashlib, traceback
 from pathlib import Path
 from PIL import Image
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import platformdirs
 
-CONFIG_FILE = Path(__file__).parent / "config.json"
-if not CONFIG_FILE.exists():
-    print(f"⚠️ 配置文件不存在: {CONFIG_FILE}")
-    print("请复制 config.example.json 为 config.json 并填入正确的配置。")
-    sys.exit(1)
+if getattr(sys, 'frozen', False):
+    application_path = Path(sys.executable).parent
+else:
+    application_path = Path(__file__).parent
 
-with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-    config_data = json.load(f)
+# 获取操作系统标准的应用数据目录（如 %APPDATA%\VLM_Renamer）
+USER_DATA_DIR = Path(platformdirs.user_data_dir("VLM_Renamer", "AI_Renamer"))
+USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+CONFIG_FILE = USER_DATA_DIR / "config.json"
 
-ACCOUNTS = config_data.get("accounts", [])
-if not ACCOUNTS:
-    print("⚠️ 配置文件中未提供有效的账号(accounts)配置。")
-    sys.exit(1)
+# 定义全局变量及默认值（以便无配置时顺利导入）
+ACCOUNTS = []
+API_ENDPOINT = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+MODEL = "doubao-seed-2-0-lite-260428"
+BASE_DIR = Path(r"e:\Picture")
+# 数据文件存放在操作系统的标准应用数据目录下，而不是照片根目录或安装目录
+LOG_FILE = USER_DATA_DIR / "rename_log.json"
+TEMP_FILE = USER_DATA_DIR / "processed_files.txt"
+MD5_FILE = USER_DATA_DIR / "processed_md5.txt"
+ERROR_LOG = USER_DATA_DIR / "error_log.txt"
 
-API_ENDPOINT = config_data.get("api_endpoint", "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
-MODEL = config_data.get("default_model", "doubao-seed-2-0-lite-260428")
-
-BASE_DIR = Path(config_data.get("base_dir", r"e:\Picture"))
-LOG_FILE = BASE_DIR / "rename_log.json"
-TEMP_FILE = BASE_DIR / "processed_files.txt"
-MD5_FILE = BASE_DIR / "processed_md5.txt"
-ERROR_LOG = BASE_DIR / "error_log.txt"
-
-BATCH_SIZE = config_data.get("batch_size", 500)
+BATCH_SIZE = 500
 CURRENT_BATCH = 1
-MAX_RETRIES = config_data.get("max_retries", 3)
+MAX_RETRIES = 3
+
+# 线程锁与同步对象
+log_lock = threading.Lock()
+print_lock = threading.Lock()
+error_flag = threading.Event()
+stats_lock = threading.Lock()
+fail_lock = threading.Lock()
+retry_lock = threading.Lock()
+db_lock = threading.Lock()  # 文本数据库锁
+
+processed_keys = set()     # 旧格式: 原分类/原文件名
+processed_md5s = set()     # 新格式: MD5 hash
+
+# MD5 缓存: {文件路径: (修改时间, MD5值)}
+_md5_cache = {}
+_md5_cache_lock = threading.Lock()
+
+stats = {"processed": 0, "renamed": 0, "reclassified": 0, "errors": 0, "skipped": 0, "retried": 0}
+consecutive_failures = {}
+retry_count = {}  # 记录每张图片的重试次数
+
+key_hits = 0
+md5_hits = 0
 
 def load_config():
     """加载配置文件"""
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
+
+def run_setup_wizard():
+    print("\n" + "=" * 60)
+    print("🚀 欢迎使用图片智能重命名与分类工具 (首次运行向导)")
+    print("=" * 60)
+    print("检测到尚未配置 API 信息，请跟随引导完成初始设置。\n")
+    
+    api_key = ""
+    while not api_key:
+        api_key = input("1. 请输入您的火山引擎 API Key (必需): ").strip()
+        
+    model = input("2. 请输入您的默认模型名 (直接回车默认 doubao-seed-2-0-lite-260428): ").strip()
+    if not model:
+        model = "doubao-seed-2-0-lite-260428"
+        
+    endpoint = input("3. 请输入 API 访问端点 (直接回车默认 https://ark.cn-beijing.volces.com/api/v3/chat/completions): ").strip()
+    if not endpoint:
+        endpoint = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+
+    cfg = {
+        "accounts": [
+            {
+                "name": "默认账号",
+                "keys": [api_key]
+            }
+        ],
+        "api_endpoint": endpoint,
+        "default_model": model,
+        "base_dir": "e:\\Picture",
+        "batch_size": 500,
+        "max_retries": 3
+    }
+    
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        print(f"\n✅ 配置已保存至: {CONFIG_FILE}\n")
+    except Exception as e:
+        print(f"\n⚠️ 保存配置失败: {e}")
+        sys.exit(1)
+
+def _migrate_data_files():
+    """自动迁移旧位置的数据文件到标准应用数据目录（兼容升级）"""
+    migrate_map = {
+        "rename_log.json": USER_DATA_DIR / "rename_log.json",
+        "processed_files.txt": USER_DATA_DIR / "processed_files.txt",
+        "processed_md5.txt": USER_DATA_DIR / "processed_md5.txt",
+        "error_log.txt": USER_DATA_DIR / "error_log.txt",
+        "task_stats.json": USER_DATA_DIR / "task_stats.json",
+        "categories.json": USER_DATA_DIR / "categories.json",
+    }
+    # 尝试从老版本的 _data 目录迁移
+    old_data_dir = BASE_DIR / "_data"
+    for filename, new_path in migrate_map.items():
+        # 如果新路径不存在，尝试从老路径迁移
+        if not new_path.exists():
+            old_path = old_data_dir / filename
+            if old_path.exists():
+                try:
+                    shutil.move(str(old_path), str(new_path))
+                    print(f"  📦 已迁移: {old_path} → {new_path}")
+                except Exception as e:
+                    print(f"  ⚠️ 迁移失败 {filename}: {e}")
+            else:
+                # 兼容更老版本，从根目录迁移
+                old_root_path = BASE_DIR / filename
+                if old_root_path.exists():
+                    try:
+                        shutil.move(str(old_root_path), str(new_path))
+                        print(f"  📦 已迁移: {old_root_path} → {new_path}")
+                    except Exception as e:
+                        pass
+                        
+    # 迁移旧 config.json (旧版在应用目录下)
+    old_config_path = application_path / "config.json"
+    if old_config_path.exists() and not CONFIG_FILE.exists():
+        try:
+            shutil.copy2(str(old_config_path), str(CONFIG_FILE))
+            print(f"  📦 已复制配置: {old_config_path} → {CONFIG_FILE}")
+        except Exception:
+            pass
+
+def load_global_config():
+    """动态读取并热加载配置文件中的全局变量"""
+    global ACCOUNTS, API_ENDPOINT, MODEL, BASE_DIR, LOG_FILE, TEMP_FILE, MD5_FILE, ERROR_LOG, BATCH_SIZE, MAX_RETRIES, consecutive_failures
+    if not CONFIG_FILE.exists():
+        run_setup_wizard()
+
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        
+        ACCOUNTS = cfg.get("accounts", [])
+        API_ENDPOINT = cfg.get("api_endpoint", "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
+        MODEL = cfg.get("default_model", "doubao-seed-2-0-lite-260428")
+        BASE_DIR = Path(cfg.get("base_dir", r"e:\Picture"))
+        
+        LOG_FILE = USER_DATA_DIR / "rename_log.json"
+        TEMP_FILE = USER_DATA_DIR / "processed_files.txt"
+        MD5_FILE = USER_DATA_DIR / "processed_md5.txt"
+        ERROR_LOG = USER_DATA_DIR / "error_log.txt"
+        
+        # 自动迁移旧位置的数据文件到标准目录
+        _migrate_data_files()
+        
+        BATCH_SIZE = cfg.get("batch_size", 500)
+        MAX_RETRIES = cfg.get("max_retries", 3)
+        
+        # 更新连续失败计数器结构
+        for acc in ACCOUNTS:
+            acc_name = acc["name"]
+            if acc_name not in consecutive_failures:
+                consecutive_failures[acc_name] = 0
+                
+        # 加载依赖路径的内存数据
+        reload_log_data()
+        reload_dedup_records()
+        return True
+    except Exception as e:
+        print(f"⚠️ 热加载配置文件失败: {str(e)}")
+        return False
+
+def reload_log_data():
+    """日志现在使用 JSONL 格式追加写入，无需在内存中维护全量 log_data"""
+    pass
+
+def reload_dedup_records():
+    """线程安全地重新加载去重记录文件"""
+    global processed_keys, processed_md5s
+    with db_lock:
+        processed_keys.clear()
+        processed_md5s.clear()
+        
+        if TEMP_FILE.exists():
+            try:
+                with open(TEMP_FILE, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            processed_keys.add(line)
+            except Exception as e:
+                log_error(f"加载旧去重记录失败: {e}")
+                
+        if MD5_FILE.exists():
+            try:
+                with open(MD5_FILE, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            parts = line.split("|", 1)
+                            if len(parts) == 2:
+                                processed_md5s.add(parts[0])
+            except Exception as e:
+                log_error(f"加载MD5去重记录失败: {e}")
+
+# 启动时默认加载一次配置与数据
+load_global_config()
 
 def get_account_info(config, index=0):
     """获取指定索引的账号信息"""
@@ -78,6 +262,7 @@ def get_account_info(config, index=0):
 
 def collect_images(base_dir=None):
     """收集所有待处理的图片"""
+    # 动态获取当前配置的最新根目录
     if base_dir is None:
         base_dir = BASE_DIR
     else:
@@ -95,93 +280,93 @@ def collect_images(base_dir=None):
 
 from vlm_classify import CATEGORIES, SCAN_CATEGORIES, CATEGORY_KEYWORDS, IMAGE_EXTS, suggest_category, check_ratio_category
 
-# ===== 双重去重系统 =====
-processed_keys = set()     # 旧格式: 原分类/原文件名
-processed_md5s = set()     # 新格式: MD5 hash
-
-# 加载旧记录
-if TEMP_FILE.exists():
-    with open(TEMP_FILE, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                processed_keys.add(line)
-
-# 加载MD5记录
-if MD5_FILE.exists():
-    with open(MD5_FILE, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                parts = line.split("|", 1)
-                if len(parts) == 2:
-                    processed_md5s.add(parts[0])
-
-key_hits = 0
-md5_hits = 0
-
-# 线程同步
-log_lock = threading.Lock()
-print_lock = threading.Lock()
-error_flag = threading.Event()
-stats_lock = threading.Lock()
-fail_lock = threading.Lock()
-retry_lock = threading.Lock()
-
-stats = {"processed": 0, "renamed": 0, "reclassified": 0, "errors": 0, "skipped": 0, "retried": 0}
-consecutive_failures = {acc["name"]: 0 for acc in ACCOUNTS}
-retry_count = {}  # 记录每张图片的重试次数
-
-log_data = []
-if LOG_FILE.exists():
-    with open(LOG_FILE, "r", encoding="utf-8") as f:
-        log_data = json.load(f)
-
-
 def log_error(msg):
     """记录错误日志"""
-    with open(ERROR_LOG, "a", encoding="utf-8") as f:
-        f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+    try:
+        with open(ERROR_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+    except:
+        pass
 
 
 def file_md5(filepath):
-    """快速MD5计算"""
+    """快速MD5计算，带缓存"""
+    global _md5_cache
+    
+    filepath = Path(filepath)
+    
+    # 检查缓存
+    try:
+        mtime = filepath.stat().st_mtime
+        with _md5_cache_lock:
+            if str(filepath) in _md5_cache:
+                cached_mtime, cached_md5 = _md5_cache[str(filepath)]
+                if cached_mtime == mtime:
+                    return cached_md5
+    except (OSError, IOError):
+        pass
+    
+    # 计算MD5
     h = hashlib.md5()
     with open(filepath, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
+        for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
-    return h.hexdigest()
+    result = h.hexdigest()
+    
+    # 更新缓存
+    try:
+        mtime = filepath.stat().st_mtime
+        with _md5_cache_lock:
+            _md5_cache[str(filepath)] = (mtime, result)
+    except (OSError, IOError):
+        pass
+    
+    return result
 
 
 def is_processed(img_path, original_cat):
     """双重判断：先查旧格式，再查MD5"""
     global key_hits, md5_hits
     old_key = f"{original_cat}/{img_path.name}"
-    if old_key in processed_keys:
-        key_hits += 1
-        return True
+    
+    with db_lock:
+        if old_key in processed_keys:
+            key_hits += 1
+            return True
+            
+    # 计算MD5必须在锁外部进行，否则会严重阻塞多线程并发
     try:
         md5 = file_md5(img_path)
+    except:
+        return False
+        
+    with db_lock:
         if md5 in processed_md5s:
             md5_hits += 1
             return True
-    except:
-        pass
     return False
 
 
 def record_processed(old_key, pre_md5=None):
     """记录处理完成（路径+MD5）"""
-    processed_keys.add(old_key)
-    with open(TEMP_FILE, "a", encoding="utf-8") as f:
-        f.write(f"{old_key}\n")
-    if pre_md5:
-        processed_md5s.add(pre_md5)
-        with open(MD5_FILE, "a", encoding="utf-8") as f:
-            f.write(f"{pre_md5}|{old_key}\n")
-    else:
-        with print_lock:
-            print(f"  ⚠️ MD5计算失败，仅记录路径: {old_key}")
+    with db_lock:
+        processed_keys.add(old_key)
+        try:
+            with open(TEMP_FILE, "a", encoding="utf-8") as f:
+                f.write(f"{old_key}\n")
+        except Exception as e:
+            log_error(f"写入TEMP_FILE失败 {old_key}: {e}")
+            
+        if pre_md5:
+            processed_md5s.add(pre_md5)
+            try:
+                with open(MD5_FILE, "a", encoding="utf-8") as f:
+                    f.write(f"{pre_md5}|{old_key}\n")
+            except Exception as e:
+                log_error(f"写入MD5_FILE失败 {pre_md5}|{old_key}: {e}")
+        else:
+            with print_lock:
+                print(f"  ⚠️ MD5计算失败，仅记录路径: {old_key}")
 
 
 def record_processed_with_md5(old_key, pre_md5=None):
@@ -234,12 +419,24 @@ def compress_image(image_path, max_size_kb=80):
         raise
 
 
-# VLM分类列表（不含比例分类，比例分类由系统自动判定）
-VLM_CATEGORIES = [c for c in CATEGORIES if c not in ("横屏", "1比1")]
-VLM_CATEGORY_LIST = "、".join(VLM_CATEGORIES)
-
-VLM_PROMPT = f"""请分析这张图片，返回JSON格式：
-{{"description": "简洁中文内容描述，不超过20字，适合作文件名", "category": "从以下类别选一个：{VLM_CATEGORY_LIST}"}}
+# 动态生成 VLM_PROMPT
+def get_vlm_prompt():
+    import vlm_classify
+    vlm_categories = [c for c in vlm_classify.CATEGORIES if c not in ("横屏", "1比1")]
+    vlm_category_list = "、".join(vlm_categories)
+    
+    # 尝试从配置加载自定义提示词模板
+    try:
+        cfg = load_config()
+        template = cfg.get("vlm_prompt_template", "")
+        if template:
+            # 简单替换占位符
+            return template.replace("{VLM_CATEGORY_LIST}", vlm_category_list)
+    except:
+        pass
+        
+    return f"""请分析这张图片，返回JSON格式：
+{{"description": "简洁中文内容描述，不超过20字，适合作文件名", "category": "从以下类别选一个：{vlm_category_list}"}}
 注意：只返回JSON，不要其他文字。description不要包含特殊字符（/:*?"<>|）"""
 
 
@@ -260,7 +457,8 @@ def parse_vlm_response(content):
             if desc:
                 desc = re.sub(r'[\\/:*?"<>|]', '', desc).replace('\n', ' ').replace('\r', '')
                 # 验证category是否有效
-                vlm_cat = cat if cat in CATEGORIES else None
+                import vlm_classify
+                vlm_cat = cat if cat in vlm_classify.CATEGORIES else None
                 return desc[:30], vlm_cat
         except json.JSONDecodeError:
             pass
@@ -269,6 +467,9 @@ def parse_vlm_response(content):
     content = re.sub(r'[\\/:*?"<>|]', '', content).replace('\n', ' ').replace('\r', '')
     return content[:30], None
 
+
+# 线程级 requests Session 复用（连接池），减少连接握手耗时
+thread_local = threading.local()
 
 def analyze_image(image_path, account_info):
     """分析图片，返回 (description, vlm_category) 元组
@@ -288,12 +489,15 @@ def analyze_image(image_path, account_info):
     current_model = account_info.get("model", MODEL)
     last_error = None
 
+    if not hasattr(thread_local, "session"):
+        thread_local.session = requests.Session()
+
     for key_idx, api_key in enumerate(account_info["keys"]):
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
         payload = {
             "model": current_model,
             "messages": [{"role": "user", "content": [
-                {"type": "text", "text": VLM_PROMPT},
+                {"type": "text", "text": get_vlm_prompt()},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
             ]}],
             "max_tokens": 150, "temperature": 0.3
@@ -302,7 +506,7 @@ def analyze_image(image_path, account_info):
         for attempt in range(3):
             try:
                 # 分离超时：连接5秒（网络握手够用）+ 读取45秒（VLM推理需要时间）
-                resp = requests.post(API_ENDPOINT, headers=headers, json=payload, timeout=(5, 45))
+                resp = thread_local.session.post(API_ENDPOINT, headers=headers, json=payload, timeout=(5, 45))
                 resp.raise_for_status()
                 raw_content = resp.json()['choices'][0]['message']['content'].strip()
                 with fail_lock:
@@ -435,10 +639,8 @@ def process_single_image(img_info, account_info, idx, total_tasks):
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
     }
     with log_lock:
-        log_data.append(log_entry)
-        if len(log_data) % 10 == 0:
-            with open(LOG_FILE, "w", encoding="utf-8") as f:
-                json.dump(log_data, f, ensure_ascii=False, indent=2)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
 
     return True  # 成功
 
@@ -531,10 +733,8 @@ def process_single_image_api(img_info, account_info, auto_rename: bool = True, a
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
     }
     with log_lock:
-        log_data.append(log_entry)
-        if len(log_data) % 10 == 0:
-            with open(LOG_FILE, "w", encoding="utf-8") as f:
-                json.dump(log_data, f, ensure_ascii=False, indent=2)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
 
     return result
 
@@ -607,10 +807,47 @@ def worker_thread(account_info, task_queue, total_tasks):
             task_queue.task_done()
 
 
+def select_base_dir():
+    """弹出GUI选择照片目录，如果用户取消则回退到默认目录"""
+    global BASE_DIR, LOG_FILE, TEMP_FILE, MD5_FILE, ERROR_LOG
+    import tkinter as tk
+    from tkinter import filedialog
+    
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        
+        print("\n=== 照片目录选择 ===")
+        print(f"默认配置目录: {BASE_DIR}")
+        print("正在弹出目录选择窗口...")
+        
+        selected_dir = filedialog.askdirectory(
+            title="请选择照片所在的根目录",
+            initialdir=str(BASE_DIR) if BASE_DIR.exists() else None
+        )
+        root.destroy()
+        
+        if selected_dir:
+            BASE_DIR = Path(selected_dir)
+            LOG_FILE = BASE_DIR / "_data" / "rename_log.json"
+            TEMP_FILE = BASE_DIR / "_data" / "processed_files.txt"
+            MD5_FILE = BASE_DIR / "_data" / "processed_md5.txt"
+            ERROR_LOG = BASE_DIR / "_data" / "error_log.txt"
+            print(f"✅ 已选择照片目录: {BASE_DIR}\n")
+        else:
+            print(f"✅ 未选择新目录，使用默认目录: {BASE_DIR}\n")
+    except Exception as e:
+        print(f"⚠️ 无法弹出目录选择窗口 ({e})，使用默认目录: {BASE_DIR}\n")
+
 def main():
     import queue
 
     global CURRENT_BATCH, key_hits, md5_hits, ACCOUNTS, BATCH_SIZE
+    global BASE_DIR, LOG_FILE, TEMP_FILE, MD5_FILE, ERROR_LOG
+
+    # --- 照片目录选择 ---
+    select_base_dir()
 
     # 账号选择交互
     print("=== 账号选择 ===")
@@ -750,10 +987,6 @@ def main():
     for t in threads:
         t.join(timeout=5)
 
-    with log_lock:
-        with open(LOG_FILE, "w", encoding="utf-8") as f:
-            json.dump(log_data, f, ensure_ascii=False, indent=2)
-
     had_error = error_flag.is_set()
 
     print("\n" + "=" * 60)
@@ -764,7 +997,8 @@ def main():
     print(f"  剩余待处理: {pending_count - stats['processed']}")
 
     if ERROR_LOG.exists():
-        error_count = sum(1 for _ in open(ERROR_LOG, "r", encoding="utf-8"))
+        with open(ERROR_LOG, "r", encoding="utf-8") as f:
+            error_count = sum(1 for _ in f)
         if error_count > 0:
             print(f"\n  错误日志: {ERROR_LOG} ({error_count}条)")
 
@@ -780,6 +1014,49 @@ def main():
 
     if had_error:
         print("\n⚠️ 检测到异常，建议检查后继续。")
+
+    # 更新持久化任务统计
+    try:
+        import json as json_module
+        import time
+
+        TASK_STATS_FILE = BASE_DIR / "_data" / "task_stats.json"
+
+        def load_task_stats():
+            if TASK_STATS_FILE.exists():
+                try:
+                    with open(TASK_STATS_FILE, "r", encoding="utf-8") as f:
+                        return json_module.load(f)
+                except Exception:
+                    pass
+            return {
+                "total_processed": 0,
+                "total_success": 0,
+                "total_errors": 0,
+                "total_renamed": 0,
+                "total_reclassified": 0,
+                "total_skipped": 0
+            }
+
+        def save_task_stats(stats):
+            stats["last_updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            with open(TASK_STATS_FILE, "w", encoding="utf-8") as f:
+                json_module.dump(stats, f, ensure_ascii=False, indent=2)
+
+        stats_data = load_task_stats()
+        stats_data["total_processed"] += stats["processed"]
+        # 成功数 = 处理数 - 错误数（避免 renamed + reclassified 重复计算同一张图片）
+        actual_success = stats["processed"] - stats["errors"]
+        stats_data["total_success"] += actual_success
+        stats_data["total_errors"] += stats["errors"]
+        stats_data["total_renamed"] += stats["renamed"]
+        stats_data["total_reclassified"] += stats["reclassified"]
+        stats_data["total_skipped"] += skipped_count
+        save_task_stats(stats_data)
+
+        print(f"\n📊 任务统计已更新到 task_stats.json")
+    except Exception as e:
+        print(f"\n⚠️ 更新任务统计失败: {e}")
 
 
 if __name__ == "__main__":

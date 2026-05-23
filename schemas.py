@@ -12,9 +12,21 @@ class ConfigUpdate(BaseModel):
     accounts: Optional[List[Dict]] = None
     api_endpoint: Optional[str] = None
     default_model: Optional[str] = None
+    assistant_model: Optional[str] = None
+    vlm_prompt_template: Optional[str] = None
     base_dir: Optional[str] = None
     batch_size: Optional[int] = None
     max_retries: Optional[int] = None
+
+# 分类配置更新
+class CategoryConfigUpdate(BaseModel):
+    categories: List[str]
+    legacy_categories: List[str]
+    category_keywords: Dict[str, Any]
+
+# AI 辅助生成请求
+class AiAssistRequest(BaseModel):
+    category_name: str
 
 # 单图分析请求
 class ImageAnalyzeRequest(BaseModel):
@@ -55,3 +67,16 @@ class CategoryInfo(BaseModel):
     name: str
     description: str
     priority: int
+
+# 手动修改和操作请求结构体
+class ImageRenameRequest(BaseModel):
+    image_path: str
+    new_name: str
+
+class ImageMoveRequest(BaseModel):
+    image_path: str
+    target_category: str
+
+class ImageDeleteRequest(BaseModel):
+    image_path: str
+
