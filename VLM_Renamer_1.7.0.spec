@@ -36,3 +36,12 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
+
+import sys
+if sys.platform == 'darwin':
+    app = BUNDLE(
+        exe,
+        name='VLM_Renamer_1.7.0.app',
+        icon=None,
+        bundle_identifier=None,
+    )
