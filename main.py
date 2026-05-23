@@ -583,6 +583,32 @@ async def update_config(config_update: ConfigUpdate = Body(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新配置失败: {str(e)}")
 
+@app.post("/api/system/open_logs", response_model=BaseResponse)
+async def open_logs_dir():
+    """打开本地日志目录"""
+    import os, platform, subprocess
+    try:
+        path = str(USER_DATA_DIR)
+        if platform.system() == "Windows":
+            os.startfile(path)
+        elif platform.system() == "Darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
+        return BaseResponse(msg="日志文件夹已打开")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"无法打开文件夹: {str(e)}")
+
+@app.post("/api/system/shutdown", response_model=BaseResponse)
+async def shutdown_system():
+    """退出系统（结束后端进程）"""
+    import os, threading, time
+    def kill_server():
+        time.sleep(1)
+        os._exit(0)
+    threading.Thread(target=kill_server, daemon=True).start()
+    return BaseResponse(msg="后端正在关闭...")
+
 @app.get("/api/categories", response_model=BaseResponse)
 async def get_categories():
     """获取所有分类列表"""
@@ -1381,10 +1407,17 @@ if frontend_dist.exists():
 if __name__ == "__main__":
     import sys
     import os
-    if sys.stdout is None:
-        sys.stdout = open(os.devnull, "w")
-    if sys.stderr is None:
-        sys.stderr = open(os.devnull, "w")
+    
+    if getattr(sys, 'frozen', False):
+        # 打包模式下，将控制台输出重定向到日志文件
+        log_path = USER_DATA_DIR / "backend_console.log"
+        sys.stdout = open(log_path, "a", encoding="utf-8")
+        sys.stderr = sys.stdout
+    else:
+        if sys.stdout is None:
+            sys.stdout = open(os.devnull, "w")
+        if sys.stderr is None:
+            sys.stderr = open(os.devnull, "w")
 
     from vlm_rename_v5 import load_global_config
     

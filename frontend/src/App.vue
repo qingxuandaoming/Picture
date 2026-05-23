@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import request from './utils/request'
 import { ElMessage } from 'element-plus'
+import { SwitchButton } from '@element-plus/icons-vue'
 import ThemeSwitch from './components/ThemeSwitch.vue'
 
 const router = useRouter()
@@ -87,6 +88,18 @@ const submitInit = async () => {
   }
 }
 
+const handleShutdown = async () => {
+  try {
+    await request.post('/system/shutdown')
+    ElMessage.success('程序正在关闭，请稍后可以关闭此页面')
+    setTimeout(() => {
+      window.close() // 尝试关闭浏览器标签页
+    }, 1500)
+  } catch (err) {
+    ElMessage.error('退出程序失败')
+  }
+}
+
 onMounted(() => {
   initTheme()
   checkInit()
@@ -116,6 +129,9 @@ onMounted(() => {
       </nav>
 
       <div class="sidebar-bottom">
+        <div class="nav-item" title="退出程序" @click="handleShutdown" style="cursor: pointer; margin-bottom: 15px; color: #f56c6c;">
+          <el-icon :size="22"><SwitchButton /></el-icon>
+        </div>
         <ThemeSwitch />
       </div>
     </div>

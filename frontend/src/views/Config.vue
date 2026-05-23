@@ -2,7 +2,7 @@
 import { ref, onMounted, reactive } from 'vue'
 import request from '../utils/request'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Delete, Edit, Check, Close, Refresh, Download } from '@element-plus/icons-vue'
+import { Plus, Delete, Edit, Check, Close, Refresh, Download, FolderOpened } from '@element-plus/icons-vue'
 
 const config = ref({
   base_dir: '',
@@ -59,6 +59,15 @@ const saveConfig = async () => {
     ElMessage.error('保存配置失败')
   } finally {
     loading.value = false
+  }
+}
+
+const openLogsFolder = async () => {
+  try {
+    await request.post('/system/open_logs')
+    ElMessage.success('日志文件夹已为您打开')
+  } catch (error) {
+    ElMessage.error('打开文件夹失败，请手动前往 AppData 查看')
   }
 }
 
@@ -422,6 +431,12 @@ onMounted(() => {
             <el-input-number v-model="config.max_retries" :min="1" :max="10" class="w-full" />
           </el-form-item>
         </div>
+        <el-form-item label="日志排查">
+          <el-button @click="openLogsFolder" type="info" plain>
+            <el-icon class="mr-2"><FolderOpened /></el-icon> 打开数据与日志文件夹
+          </el-button>
+          <span class="ml-3" style="color: var(--text-lighter); font-size: 13px;">查看程序的报错日志记录</span>
+        </el-form-item>
       </el-form>
     </div>
 
