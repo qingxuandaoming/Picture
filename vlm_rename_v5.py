@@ -830,10 +830,10 @@ def select_base_dir():
         
         if selected_dir:
             BASE_DIR = Path(selected_dir)
-            LOG_FILE = BASE_DIR / "_data" / "rename_log.json"
-            TEMP_FILE = BASE_DIR / "_data" / "processed_files.txt"
-            MD5_FILE = BASE_DIR / "_data" / "processed_md5.txt"
-            ERROR_LOG = BASE_DIR / "_data" / "error_log.txt"
+            LOG_FILE = USER_DATA_DIR / "rename_log.json"
+            TEMP_FILE = USER_DATA_DIR / "processed_files.txt"
+            MD5_FILE = USER_DATA_DIR / "processed_md5.txt"
+            ERROR_LOG = USER_DATA_DIR / "error_log.txt"
             print(f"✅ 已选择照片目录: {BASE_DIR}\n")
         else:
             print(f"✅ 未选择新目录，使用默认目录: {BASE_DIR}\n")
@@ -1020,7 +1020,7 @@ def main():
         import json as json_module
         import time
 
-        TASK_STATS_FILE = BASE_DIR / "_data" / "task_stats.json"
+        TASK_STATS_FILE = USER_DATA_DIR / "task_stats.json"
 
         def load_task_stats():
             if TASK_STATS_FILE.exists():

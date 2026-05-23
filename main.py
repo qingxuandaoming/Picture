@@ -1150,7 +1150,7 @@ async def get_stats():
         processed_md5s = set()  # MD5 去重集合
 
         # 从 MD5 去重记录文件读取已处理记录
-        md5_file = base_dir / "_data" / "processed_md5.txt"
+        md5_file = USER_DATA_DIR / "processed_md5.txt"
         if md5_file.exists():
             with open(md5_file, "r", encoding="utf-8") as f:
                 for line in f:
