@@ -35,7 +35,7 @@ v7.0.2 改进:
 """
 
 # 当前版本号，每次修改请按上方规则同步更新
-VERSION = "2.1.3"
+VERSION = "2.1.4"
 import os, re, json, time, shutil, base64, requests, io, threading, sys, hashlib, traceback
 from pathlib import Path
 from PIL import Image

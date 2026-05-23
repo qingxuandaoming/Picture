@@ -613,6 +613,49 @@ async def shutdown_system():
     threading.Thread(target=kill_server, daemon=True).start()
     return BaseResponse(msg="后端正在关闭...")
 
+@app.post("/api/system/clear_cache", response_model=BaseResponse)
+async def clear_system_cache(request: Request):
+    """清除当前根目录的处理记录缓存（MD5记录），以便重新处理"""
+    from vlm_rename_v5 import TEMP_FILE, MD5_FILE, db_lock, processed_keys, processed_md5s
+    
+    deleted = 0
+    try:
+        with db_lock:
+            # 清除内存
+            processed_keys.clear()
+            processed_md5s.clear()
+            
+            # 删除物理文件 (尝试删除可能存在的各个模式的缓存)
+            dir_hash_part = ""
+            if MD5_FILE and MD5_FILE.name:
+                # 提取哈希部分, eg. processed_md5_12345678.txt -> 12345678
+                import re
+                m = re.search(r'_([a-f0-9]{8})\.txt$', MD5_FILE.name)
+                if m:
+                    dir_hash_part = m.group(1)
+            
+            if dir_hash_part:
+                # 删除该目录下的所有模式的去重文件
+                import glob
+                pattern = str(USER_DATA_DIR / f"*_{dir_hash_part}.txt")
+                for fpath in glob.glob(pattern):
+                    if "processed_" in fpath:
+                        os.remove(fpath)
+                        deleted += 1
+            else:
+                # 兜底：直接删当前的两个变量指向的文件
+                if TEMP_FILE and TEMP_FILE.exists():
+                    TEMP_FILE.unlink()
+                    deleted += 1
+                if MD5_FILE and MD5_FILE.exists():
+                    MD5_FILE.unlink()
+                    deleted += 1
+                    
+        return BaseResponse(msg=f"成功清除当前目录的缓存记录（已删除 {deleted} 个缓存文件）。您可以重新整理照片了！")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"清除缓存失败: {str(e)}")
+
+
 @app.get("/api/categories", response_model=BaseResponse)
 async def get_categories():
     """获取所有分类列表"""

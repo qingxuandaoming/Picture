@@ -71,6 +71,26 @@ const openLogsFolder = async () => {
   }
 }
 
+const clearCache = async () => {
+  try {
+    await ElMessageBox.confirm(
+      '确定要清除当前照片目录的处理记录吗？清除后，之前跳过的照片如果被移回根目录，将会重新被 AI 处理。',
+      '清除记录',
+      {
+        confirmButtonText: '确定清除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    const res = await request.post('/system/clear_cache')
+    ElMessage.success(res.msg || '缓存清除成功')
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error(error.response?.data?.detail || '清除缓存失败')
+    }
+  }
+}
+
 const selectingFolder = ref(false)
 const selectFolder = async () => {
   selectingFolder.value = true
@@ -431,11 +451,18 @@ onMounted(() => {
             <el-input-number v-model="config.max_retries" :min="1" :max="10" class="w-full" />
           </el-form-item>
         </div>
-        <el-form-item label="日志排查">
-          <el-button @click="openLogsFolder" type="info" plain>
-            <el-icon class="mr-2"><FolderOpened /></el-icon> 打开数据与日志文件夹
-          </el-button>
-          <span class="ml-3" style="color: var(--text-lighter); font-size: 13px;">查看程序的报错日志记录</span>
+        <el-form-item label="清理与排查">
+          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <el-button @click="openLogsFolder" type="info" plain>
+              <el-icon class="mr-2"><FolderOpened /></el-icon> 打开数据与日志文件夹
+            </el-button>
+            <el-button @click="clearCache" type="warning" plain>
+              <el-icon class="mr-2"><Delete /></el-icon> 清除当前目录图片处理记录
+            </el-button>
+          </div>
+          <div style="width: 100%; margin-top: 5px;">
+            <span style="color: var(--text-lighter); font-size: 13px;">如果您的文件夹结构发生改变，想让程序重新整理图片，可以点击【清除记录】来重置当前目录的记忆，照片就不会被系统跳过了。</span>
+          </div>
         </el-form-item>
       </el-form>
     </div>
