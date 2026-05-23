@@ -35,7 +35,7 @@ v7.0.2 改进:
 """
 
 # 当前版本号，每次修改请按上方规则同步更新
-VERSION = "2.1.2"
+VERSION = "2.1.3"
 import os, re, json, time, shutil, base64, requests, io, threading, sys, hashlib, traceback
 from pathlib import Path
 from PIL import Image
@@ -53,13 +53,20 @@ USER_DATA_DIR = Path(platformdirs.user_data_dir("VLM_Renamer", "AI_Renamer"))
 USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = USER_DATA_DIR / "config.json"
 
-def update_data_paths(base_dir_path):
-    global BASE_DIR, LOG_FILE, TEMP_FILE, MD5_FILE, ERROR_LOG
+def update_data_paths(base_dir_path, run_mode=1):
+    global BASE_DIR, LOG_FILE, TEMP_FILE, MD5_FILE, ERROR_LOG, RUN_MODE
+    RUN_MODE = run_mode
     BASE_DIR = Path(base_dir_path)
     dir_hash = hashlib.md5(str(BASE_DIR).encode()).hexdigest()[:8]
     LOG_FILE = USER_DATA_DIR / "rename_log.json"
-    TEMP_FILE = USER_DATA_DIR / f"processed_files_{dir_hash}.txt"
-    MD5_FILE = USER_DATA_DIR / f"processed_md5_{dir_hash}.txt"
+    
+    if run_mode == 3:
+        TEMP_FILE = USER_DATA_DIR / f"processed_files_mode3_{dir_hash}.txt"
+        MD5_FILE = USER_DATA_DIR / f"processed_md5_mode3_{dir_hash}.txt"
+    else:
+        TEMP_FILE = USER_DATA_DIR / f"processed_files_{dir_hash}.txt"
+        MD5_FILE = USER_DATA_DIR / f"processed_md5_{dir_hash}.txt"
+        
     ERROR_LOG = USER_DATA_DIR / "error_log.txt"
 
 # 定义全局变量及默认值（以便无配置时顺利导入）

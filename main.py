@@ -171,7 +171,7 @@ def process_batch_task(task_id: str, base_dir: str, account_index: int, max_proc
     """后台批量处理任务"""
     import queue
     # 强制热加载 config.json 及 vlm_rename_v5 的全局变量
-    from vlm_rename_v5 import load_global_config, is_processed, ACCOUNTS, process_single_image_api, error_flag, retry_count, MAX_RETRIES, log_lock
+    from vlm_rename_v5 import load_global_config, is_processed, ACCOUNTS, process_single_image_api, error_flag, retry_count, MAX_RETRIES, log_lock, update_data_paths, reload_dedup_records
     load_global_config()
 
     try:
@@ -182,6 +182,10 @@ def process_batch_task(task_id: str, base_dir: str, account_index: int, max_proc
 
         if not task_base_dir.exists():
             raise FileNotFoundError(f"指定的处理根目录不存在: {task_base_dir}")
+            
+        # 根据当前 run_mode 更新缓存文件路径，并重新加载去重记录
+        update_data_paths(task_base_dir, run_mode)
+        reload_dedup_records()
 
         # 收集图片
         images = collect_images(str(task_base_dir), run_mode=run_mode)
