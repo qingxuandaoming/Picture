@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 图片智能重命名和分类 - v7.1.0
 改进点:
@@ -35,7 +35,7 @@ v7.0.2 改进:
 """
 
 # 当前版本号，每次修改请按上方规则同步更新
-VERSION = "1.9.2"
+VERSION = "2.1.0"
 import os, re, json, time, shutil, base64, requests, io, threading, sys, hashlib, traceback
 from pathlib import Path
 from PIL import Image
@@ -53,20 +53,31 @@ USER_DATA_DIR = Path(platformdirs.user_data_dir("VLM_Renamer", "AI_Renamer"))
 USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = USER_DATA_DIR / "config.json"
 
+def update_data_paths(base_dir_path):
+    global BASE_DIR, LOG_FILE, TEMP_FILE, MD5_FILE, ERROR_LOG
+    BASE_DIR = Path(base_dir_path)
+    dir_hash = hashlib.md5(str(BASE_DIR).encode()).hexdigest()[:8]
+    LOG_FILE = USER_DATA_DIR / "rename_log.json"
+    TEMP_FILE = USER_DATA_DIR / f"processed_files_{dir_hash}.txt"
+    MD5_FILE = USER_DATA_DIR / f"processed_md5_{dir_hash}.txt"
+    ERROR_LOG = USER_DATA_DIR / "error_log.txt"
+
 # 定义全局变量及默认值（以便无配置时顺利导入）
 ACCOUNTS = []
 API_ENDPOINT = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
 MODEL = "doubao-seed-2-0-lite-260428"
 BASE_DIR = Path(r"e:\Picture")
 # 数据文件存放在操作系统的标准应用数据目录下，而不是照片根目录或安装目录
-LOG_FILE = USER_DATA_DIR / "rename_log.json"
-TEMP_FILE = USER_DATA_DIR / "processed_files.txt"
-MD5_FILE = USER_DATA_DIR / "processed_md5.txt"
-ERROR_LOG = USER_DATA_DIR / "error_log.txt"
+LOG_FILE = None
+TEMP_FILE = None
+MD5_FILE = None
+ERROR_LOG = None
+update_data_paths(BASE_DIR)
 
 BATCH_SIZE = 500
 CURRENT_BATCH = 1
 MAX_RETRIES = 3
+RUN_MODE = 1
 
 # 线程锁与同步对象
 log_lock = threading.Lock()
@@ -140,8 +151,8 @@ def _migrate_data_files():
     """自动迁移旧位置的数据文件到标准应用数据目录（兼容升级）"""
     migrate_map = {
         "rename_log.json": USER_DATA_DIR / "rename_log.json",
-        "processed_files.txt": USER_DATA_DIR / "processed_files.txt",
-        "processed_md5.txt": USER_DATA_DIR / "processed_md5.txt",
+        "processed_files.txt": TEMP_FILE,
+        "processed_md5.txt": MD5_FILE,
         "error_log.txt": USER_DATA_DIR / "error_log.txt",
         "task_stats.json": USER_DATA_DIR / "task_stats.json",
         "categories.json": USER_DATA_DIR / "categories.json",
@@ -191,11 +202,7 @@ def load_global_config():
         API_ENDPOINT = cfg.get("api_endpoint", "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
         MODEL = cfg.get("default_model", "doubao-seed-2-0-lite-260428")
         BASE_DIR = Path(cfg.get("base_dir", r"e:\Picture"))
-        
-        LOG_FILE = USER_DATA_DIR / "rename_log.json"
-        TEMP_FILE = USER_DATA_DIR / "processed_files.txt"
-        MD5_FILE = USER_DATA_DIR / "processed_md5.txt"
-        ERROR_LOG = USER_DATA_DIR / "error_log.txt"
+        update_data_paths(BASE_DIR)
         
         # 自动迁移旧位置的数据文件到标准目录
         _migrate_data_files()
@@ -260,7 +267,7 @@ def get_account_info(config, index=0):
         return accounts[0] if accounts else None
     return accounts[index]
 
-def collect_images(base_dir=None):
+def collect_images(base_dir=None, run_mode=1):
     """收集所有待处理的图片"""
     # 动态获取当前配置的最新根目录
     if base_dir is None:
@@ -269,13 +276,22 @@ def collect_images(base_dir=None):
         base_dir = Path(base_dir)
 
     all_images = []
-    for cat in SCAN_CATEGORIES:
-        cat_dir = base_dir / cat
-        if not cat_dir.exists():
-            continue
-        for f in cat_dir.iterdir():
+    
+    # 无论何种模式，都扫描根目录的散落图片
+    if base_dir.exists():
+        for f in base_dir.iterdir():
             if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
-                all_images.append({"path": f, "original_category": cat})
+                all_images.append({"path": f, "original_category": "根目录散落"})
+                
+    # 如果不是仅处理根目录模式(模式3)，则扫描所有子目录（不限于预设分类）
+    if run_mode != 3 and base_dir.exists():
+        for cat_dir in base_dir.iterdir():
+            if cat_dir.is_dir() and not cat_dir.name.startswith(('_', '.')):
+                cat = cat_dir.name
+                for f in cat_dir.iterdir():
+                    if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
+                        all_images.append({"path": f, "original_category": cat})
+                        
     return all_images
 
 from vlm_classify import CATEGORIES, SCAN_CATEGORIES, CATEGORY_KEYWORDS, IMAGE_EXTS, suggest_category, check_ratio_category
@@ -420,7 +436,12 @@ def compress_image(image_path, max_size_kb=80):
 
 
 # 动态生成 VLM_PROMPT
-def get_vlm_prompt():
+def get_vlm_prompt(run_mode=1, available_folders=None):
+    if run_mode == 3 and available_folders:
+        folders_str = "、".join(available_folders)
+        return f"""请分析这张图片，从以下已有文件夹中选择一个最合适的归类：{folders_str}。
+注意：只返回JSON格式 {{"category": "分类名"}}，不要其他文字。如果不确定可以返回空字符串。"""
+
     import vlm_classify
     vlm_categories = [c for c in vlm_classify.CATEGORIES if c not in ("横屏", "1比1")]
     vlm_category_list = "、".join(vlm_categories)
@@ -440,7 +461,7 @@ def get_vlm_prompt():
 注意：只返回JSON，不要其他文字。description不要包含特殊字符（/:*?"<>|）"""
 
 
-def parse_vlm_response(content):
+def parse_vlm_response(content, run_mode=1, available_folders=None):
     """解析VLM返回的JSON响应，提取description和category
 
     支持多种格式：纯JSON、markdown代码块包裹的JSON、纯文本回退
@@ -454,6 +475,11 @@ def parse_vlm_response(content):
             data = json.loads(json_match.group())
             desc = data.get("description", "").strip()
             cat = data.get("category", "").strip()
+            
+            if run_mode == 3:
+                vlm_cat = cat if (available_folders and cat in available_folders) else None
+                return "", vlm_cat
+
             if desc:
                 desc = re.sub(r'[\\/:*?"<>|]', '', desc).replace('\n', ' ').replace('\r', '')
                 # 验证category是否有效
@@ -463,6 +489,9 @@ def parse_vlm_response(content):
         except json.JSONDecodeError:
             pass
 
+    if run_mode == 3:
+        return "", None
+
     # 回退：当作纯描述文本处理（兼容旧模型不返回JSON的情况）
     content = re.sub(r'[\\/:*?"<>|]', '', content).replace('\n', ' ').replace('\r', '')
     return content[:30], None
@@ -471,7 +500,7 @@ def parse_vlm_response(content):
 # 线程级 requests Session 复用（连接池），减少连接握手耗时
 thread_local = threading.local()
 
-def analyze_image(image_path, account_info):
+def analyze_image(image_path, account_info, run_mode=1, available_folders=None):
     """分析图片，返回 (description, vlm_category) 元组
 
     vlm_category 可能为 None（当VLM未返回有效分类时）
@@ -497,7 +526,7 @@ def analyze_image(image_path, account_info):
         payload = {
             "model": current_model,
             "messages": [{"role": "user", "content": [
-                {"type": "text", "text": get_vlm_prompt()},
+                {"type": "text", "text": get_vlm_prompt(run_mode, available_folders)},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
             ]}],
             "max_tokens": 150, "temperature": 0.3
@@ -511,17 +540,17 @@ def analyze_image(image_path, account_info):
                 raw_content = resp.json()['choices'][0]['message']['content'].strip()
                 with fail_lock:
                     consecutive_failures[account_name] = 0
-                return parse_vlm_response(raw_content)
+                return parse_vlm_response(raw_content, run_mode, available_folders)
             except requests.exceptions.Timeout:
                 last_error = f"请求超时(key{key_idx+1}, 第{attempt+1}次)"
                 # 超时指数退避：1s→2s→4s，给服务端喘息时间
                 backoff = min(2 ** attempt, 4)
                 time.sleep(backoff)
             except requests.exceptions.HTTPError as e:
-                status_code = e.response.status_code if e.response else "未知"
+                status_code = e.response.status_code if e.response is not None else "未知"
                 error_body = ""
                 try:
-                    error_body = e.response.text[:150] if e.response else ""
+                    error_body = e.response.text[:150] if e.response is not None else ""
                 except Exception:
                     pass
                 last_error = f"HTTP {status_code}: {error_body[:100]}"
@@ -571,7 +600,7 @@ def safe_move(src, dst_dir, new_name):
         return None
 
 
-def process_single_image(img_info, account_info, idx, total_tasks):
+def process_single_image(img_info, account_info, idx, total_tasks, run_mode=1, available_folders=None):
     """处理单张图片，返回(True成功, False失败, None跳过)"""
     img_path = img_info["path"]
     original_cat = img_info["original_category"]
@@ -593,16 +622,29 @@ def process_single_image(img_info, account_info, idx, total_tasks):
     with print_lock:
         print(f"[{account_name}][{idx+1}/{total_tasks}] {img_path.name[:45]}...")
 
-    description, vlm_category = analyze_image(img_path, account_info)
-    if not description:
-        return False  # 失败，需要重试
-
-    # 比例分类优先级最高：16:9 横屏 和 1:1 方形
-    ratio_cat = check_ratio_category(img_path)
-    if ratio_cat:
-        new_cat = ratio_cat
+    description, vlm_category = analyze_image(img_path, account_info, run_mode, available_folders)
+    
+    if run_mode == 3:
+        if not vlm_category:
+            return False  # 失败，需要重试
+        new_cat = vlm_category
+        description = img_path.stem
+        target_dir = BASE_DIR / new_cat
     else:
-        new_cat = suggest_category(description, original_cat, img_path, vlm_category=vlm_category)
+        if not description:
+            return False  # 失败，需要重试
+
+        if run_mode == 2:
+            new_cat = original_cat
+            target_dir = img_path.parent
+        else:
+            # 比例分类优先级最高：16:9 横屏 和 1:1 方形
+            ratio_cat = check_ratio_category(img_path)
+            if ratio_cat:
+                new_cat = ratio_cat
+            else:
+                new_cat = suggest_category(description, original_cat, img_path, vlm_category=vlm_category)
+            target_dir = BASE_DIR / new_cat
 
     # 在移动文件之前，先计算MD5并记录
     pre_md5 = None
@@ -611,7 +653,7 @@ def process_single_image(img_info, account_info, idx, total_tasks):
     except:
         pass
 
-    new_filename = safe_move(img_path, BASE_DIR / new_cat, description)
+    new_filename = safe_move(img_path, target_dir, description)
 
     if not new_filename:
         return False  # 失败，需要重试
@@ -644,7 +686,7 @@ def process_single_image(img_info, account_info, idx, total_tasks):
 
     return True  # 成功
 
-def process_single_image_api(img_info, account_info, auto_rename: bool = True, auto_move: bool = True):
+def process_single_image_api(img_info, account_info, auto_rename: bool = True, auto_move: bool = True, run_mode=1, available_folders=None):
     """API专用的单图处理函数，返回详细结果字典"""
     img_path = img_info["path"] if isinstance(img_info, dict) else Path(img_info)
     original_cat = img_info.get("original_category", "其他") if isinstance(img_info, dict) else "其他"
@@ -676,25 +718,37 @@ def process_single_image_api(img_info, account_info, auto_rename: bool = True, a
         result["skipped"] = True
         return result
 
-    description, vlm_category = analyze_image(img_path, account_info)
-    if not description:
-        result["error"] = "图片分析失败"
-        return result
+    description, vlm_category = analyze_image(img_path, account_info, run_mode, available_folders)
+    
+    if run_mode == 3:
+        if not vlm_category:
+            result["error"] = "VLM分类失败"
+            return result
+        new_cat = vlm_category
+        description = img_path.stem
+        target_dir = BASE_DIR / new_cat
+    else:
+        if not description:
+            result["error"] = "VLM分析失败"
+            return result
+
+        if run_mode == 2 or not auto_move:
+            new_cat = original_cat
+            target_dir = img_path.parent
+        else:
+            # 比例分类优先级最高
+            ratio_cat = check_ratio_category(img_path)
+            if ratio_cat:
+                new_cat = ratio_cat
+            else:
+                new_cat = suggest_category(description, original_cat, img_path, vlm_category=vlm_category)
+            target_dir = BASE_DIR / new_cat
 
     result["description"] = description
-    result["category"] = vlm_category
-
-    # 比例分类优先级最高：16:9 横屏 和 1:1 方形
-    ratio_cat = check_ratio_category(img_path)
-    if ratio_cat:
-        new_cat = ratio_cat
-    else:
-        new_cat = suggest_category(description, original_cat, img_path, vlm_category=vlm_category)
-
     result["category"] = new_cat
     result["reclassified"] = new_cat != original_cat
 
-    if not auto_rename and not auto_move:
+    if run_mode == 1 and not auto_rename and not auto_move:
         # 仅分析，不重命名不移动
         result["success"] = True
         return result
@@ -706,12 +760,7 @@ def process_single_image_api(img_info, account_info, auto_rename: bool = True, a
     except:
         pass
 
-    if auto_move:
-        target_dir = BASE_DIR / new_cat
-    else:
-        target_dir = img_path.parent
-
-    new_filename = safe_move(img_path, target_dir, description) if auto_rename else img_path.name
+    new_filename = safe_move(img_path, target_dir, description) if (auto_rename or run_mode == 3) else img_path.name
 
     if not new_filename:
         result["error"] = "文件移动/重命名失败"
@@ -739,7 +788,7 @@ def process_single_image_api(img_info, account_info, auto_rename: bool = True, a
     return result
 
 
-def worker_thread(account_info, task_queue, total_tasks):
+def worker_thread(account_info, task_queue, total_tasks, run_mode=1, available_folders=None):
     """工作线程 - 带异常捕获"""
     account_name = account_info["name"]
 
@@ -763,7 +812,7 @@ def worker_thread(account_info, task_queue, total_tasks):
             current_retries = retry_count.get(str(img_path), 0)
 
         try:
-            result = process_single_image(img_info, account_info, idx, total_tasks)
+            result = process_single_image(img_info, account_info, idx, total_tasks, run_mode, available_folders)
             
             if result is None:
                 # 跳过（已处理或文件不存在）
@@ -829,11 +878,7 @@ def select_base_dir():
         root.destroy()
         
         if selected_dir:
-            BASE_DIR = Path(selected_dir)
-            LOG_FILE = USER_DATA_DIR / "rename_log.json"
-            TEMP_FILE = USER_DATA_DIR / "processed_files.txt"
-            MD5_FILE = USER_DATA_DIR / "processed_md5.txt"
-            ERROR_LOG = USER_DATA_DIR / "error_log.txt"
+            update_data_paths(selected_dir)
             print(f"✅ 已选择照片目录: {BASE_DIR}\n")
         else:
             print(f"✅ 未选择新目录，使用默认目录: {BASE_DIR}\n")
@@ -844,7 +889,7 @@ def main():
     import queue
 
     global CURRENT_BATCH, key_hits, md5_hits, ACCOUNTS, BATCH_SIZE
-    global BASE_DIR, LOG_FILE, TEMP_FILE, MD5_FILE, ERROR_LOG
+    global BASE_DIR, LOG_FILE, TEMP_FILE, MD5_FILE, ERROR_LOG, RUN_MODE
 
     if not CONFIG_FILE.exists():
         print("尚未配置，请通过 Web 界面完成初始化。")
@@ -891,6 +936,23 @@ def main():
             print(f"✅ {acc['name']} 使用默认模型")
     print()
 
+    # 运行模式选择交互
+    print("=== 运行模式选择 ===")
+    print("1 → 默认模式：分析重命名，并移动到分类目录")
+    print("2 → 仅重命名：分析重命名，保留在原目录")
+    print("3 → 整理根目录散落图片：将根目录未分类图片归入已有文件夹")
+    mode_choice = input("请输入选择(直接回车默认1): ").strip()
+    if mode_choice == "2":
+        RUN_MODE = 2
+        print("✅ 已选择：仅重命名")
+    elif mode_choice == "3":
+        RUN_MODE = 3
+        print("✅ 已选择：整理根目录散落图片")
+    else:
+        RUN_MODE = 1
+        print("✅ 已选择：默认模式")
+    print()
+
     # 处理数量选择交互
     print("=== 处理数量选择 ===")
     print(f"默认处理 500 张，输入 0 处理全部")
@@ -917,15 +979,27 @@ def main():
     if ERROR_LOG.exists():
         ERROR_LOG.unlink()
 
-    # 第一步：扫描所有图片（包含新旧分类目录）
+    # 第一步：扫描所有图片（根据运行模式）
     all_images = []
-    for cat in SCAN_CATEGORIES:
-        cat_dir = BASE_DIR / cat
-        if not cat_dir.exists():
-            continue
-        for f in cat_dir.iterdir():
+    available_folders = []
+
+    if RUN_MODE == 3:
+        available_folders = [d.name for d in BASE_DIR.iterdir() if d.is_dir() and not d.name.startswith(('.', '_'))]
+        if not available_folders:
+            print("⚠️ 根目录下没有可用文件夹，无法运行模式3。")
+            return
+        # 扫描根目录下的图片
+        for f in BASE_DIR.iterdir():
             if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
-                all_images.append({"path": f, "original_category": cat})
+                all_images.append({"path": f, "original_category": "根目录散落"})
+    else:
+        for cat in SCAN_CATEGORIES:
+            cat_dir = BASE_DIR / cat
+            if not cat_dir.exists():
+                continue
+            for f in cat_dir.iterdir():
+                if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
+                    all_images.append({"path": f, "original_category": cat})
 
     total_all = len(all_images)
 
@@ -978,7 +1052,7 @@ def main():
 
     threads = []
     for acc in ACCOUNTS:
-        t = threading.Thread(target=worker_thread, args=(acc, task_queue, len(batch_images)))
+        t = threading.Thread(target=worker_thread, args=(acc, task_queue, len(batch_images), RUN_MODE, available_folders))
         t.daemon = True
         t.start()
         threads.append(t)

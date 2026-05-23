@@ -167,7 +167,7 @@ def update_task_stats(processed=0, success=0, errors=0, renamed=0, reclassified=
 
 # ===== 任务处理函数 =====
 def process_batch_task(task_id: str, base_dir: str, account_index: int, max_process: Optional[int],
-                       auto_rename: bool, auto_move: bool, task_type: str = "rename"):
+                       auto_rename: bool, auto_move: bool, task_type: str = "rename", run_mode: int = 1):
     """后台批量处理任务"""
     import queue
     # 强制热加载 config.json 及 vlm_rename_v5 的全局变量
@@ -184,7 +184,8 @@ def process_batch_task(task_id: str, base_dir: str, account_index: int, max_proc
             raise FileNotFoundError(f"指定的处理根目录不存在: {task_base_dir}")
 
         # 收集图片
-        images = collect_images(str(task_base_dir))
+        images = collect_images(str(task_base_dir), run_mode=run_mode)
+        available_folders = [d.name for d in task_base_dir.iterdir() if d.is_dir() and not d.name.startswith(('.', '_'))]
 
         if task_type == "classify":
             # 规则分类任务 (对应 vlm_classify.py)
@@ -357,7 +358,8 @@ def process_batch_task(task_id: str, base_dir: str, account_index: int, max_proc
 
                     try:
                         res = process_single_image_api(
-                            img_info, account_info, auto_rename=auto_rename, auto_move=auto_move
+                            img_info, account_info, auto_rename=auto_rename, auto_move=auto_move, 
+                            run_mode=run_mode, available_folders=available_folders
                         )
 
                         if res.get("skipped"):
@@ -575,6 +577,29 @@ async def get_categories():
             "description": ""
         })
     return BaseResponse(data=categories)
+
+@app.get("/api/select_folder", response_model=BaseResponse)
+async def select_folder_dialog():
+    """打开系统文件夹选择框，返回选择的路径"""
+    try:
+        import subprocess
+        cmd = '''
+        Add-Type -AssemblyName System.windows.forms
+        $f = New-Object System.Windows.Forms.FolderBrowserDialog
+        $f.Description = "请选择图片所在的根目录"
+        $f.ShowNewFolderButton = $true
+        if ($f.ShowDialog() -eq "OK") {
+            Write-Output $f.SelectedPath
+        }
+        '''
+        result = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0)
+        selected_path = result.stdout.strip()
+        if selected_path:
+            return BaseResponse(data={"path": selected_path})
+        else:
+            return BaseResponse(msg="未选择目录", data={"path": ""})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"打开文件夹选择器失败: {str(e)}")
 
 @app.get("/api/categories/config", response_model=BaseResponse)
 async def get_categories_config():
@@ -1022,7 +1047,7 @@ async def start_batch_process(request: BatchStartRequest = Body(...)):
             target=process_batch_task,
             args=(task_id, request.base_dir, request.account_index,
                   request.max_process, request.auto_rename, request.auto_move,
-                  request.task_type if hasattr(request, 'task_type') else "rename")
+                  request.task_type if hasattr(request, 'task_type') else "rename", request.run_mode)
         )
         thread.daemon = True
         thread.start()
@@ -1161,15 +1186,13 @@ async def get_stats():
                             processed_md5s.add(parts[0])
 
         # 统计当前文件
-        for cat in ALL_CATEGORIES:
-            cat_dir = base_dir / cat
-            if cat_dir.exists():
-                count = 0
-                for f in cat_dir.iterdir():
-                    if f.is_file() and f.suffix.lower() in ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'):
-                        count += 1
-                        total_files += 1
-                category_stats[cat] = count
+        from vlm_rename_v5 import collect_images
+        images = collect_images(str(base_dir), run_mode=1)
+        
+        for img in images:
+            total_files += 1
+            cat = img["original_category"]
+            category_stats[cat] = category_stats.get(cat, 0) + 1
 
         # 使用 MD5 去重后的已处理数量
         total_processed = len(processed_md5s)
@@ -1353,14 +1376,29 @@ if __name__ == "__main__":
         pass
 
     # 3. 自动打开浏览器
-    def open_browser():
+    def open_browser(target_port):
         time.sleep(2)
         try:
-            webbrowser.open("http://localhost:8000")
+            import webbrowser
+            webbrowser.open(f"http://localhost:{target_port}")
         except Exception as e:
             print(f"打开浏览器失败: {e}")
 
-    threading.Thread(target=open_browser, daemon=True).start()
+    # 尝试绑定可用端口，防止 8000 被占用
+    import socket
+    def get_available_port(start_port, max_ports=5):
+        for p in range(start_port, start_port + max_ports):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                try:
+                    s.bind(("0.0.0.0", p))
+                    return p
+                except OSError:
+                    continue
+        return start_port
+        
+    actual_port = get_available_port(8000, max_ports=5)
+    
+    # 移除了自动打开浏览器逻辑，统一由 start.bat 在前端启动
     
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=actual_port)

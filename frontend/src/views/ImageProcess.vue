@@ -13,7 +13,8 @@ const form = ref({
   max_process: 500,
   account_index: 0,
   auto_rename: true,
-  auto_move: true
+  auto_move: true,
+  run_mode: 1
 })
 const loadingBatch = ref(false)
 const ruleDialogVisible = ref(false)
@@ -233,8 +234,23 @@ const startVLMRename = async () => {
     }, 800)
   } catch (error) {
     ElMessage.error('任务启动失败: ' + (error.message || '未知错误'))
-    } finally {
+  } finally {
     loadingBatch.value = false
+  }
+}
+
+const selectingFolder = ref(false)
+const selectFolder = async () => {
+  selectingFolder.value = true
+  try {
+    const res = await request.get('/select_folder')
+    if (res && res.path) {
+      form.value.base_dir = res.path
+    }
+  } catch (error) {
+    ElMessage.error('无法打开文件夹选择框或未选择')
+  } finally {
+    selectingFolder.value = false
   }
 }
 
@@ -638,7 +654,10 @@ onMounted(() => {
     <el-dialog v-model="ruleDialogVisible" title="全量规则批量归类设置" width="600px" custom-class="batch-dialog">
       <el-form :model="form" label-width="140px">
         <el-form-item label="图片根目录">
-          <el-input v-model="form.base_dir" placeholder="e:\Picture" />
+          <div style="display: flex; gap: 10px; width: 100%;">
+            <el-input v-model="form.base_dir" placeholder="e:\Picture" style="flex: 1;" />
+            <el-button @click="selectFolder" :loading="selectingFolder">浏览...</el-button>
+          </div>
         </el-form-item>
         <el-form-item label="处理上限数量">
           <el-input-number v-model="form.max_process" :min="1" :max="100000" class="w-full" />
@@ -659,7 +678,10 @@ onMounted(() => {
     <el-dialog v-model="vlmDialogVisible" title="VLM 大模型批量处理设置" width="600px" custom-class="batch-dialog">
       <el-form :model="form" label-width="140px">
         <el-form-item label="图片根目录">
-          <el-input v-model="form.base_dir" placeholder="e:\Picture" />
+          <div style="display: flex; gap: 10px; width: 100%;">
+            <el-input v-model="form.base_dir" placeholder="e:\Picture" style="flex: 1;" />
+            <el-button @click="selectFolder" :loading="selectingFolder">浏览...</el-button>
+          </div>
         </el-form-item>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
           <el-form-item label="处理上限数量">
@@ -669,7 +691,14 @@ onMounted(() => {
             <el-input-number v-model="form.account_index" :min="0" :max="9" class="w-full" />
           </el-form-item>
         </div>
-        <el-form-item label="图片重构选项">
+        <el-form-item label="运行模式">
+          <el-radio-group v-model="form.run_mode">
+            <el-radio :value="1">默认模式 (重命名并归档)</el-radio>
+            <el-radio :value="2">仅分析重命名 (保留在原目录)</el-radio>
+            <el-radio :value="3">整理根目录散落图片 (收集根目录图片进行整理)</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="图片重构选项" v-if="form.run_mode === 1">
           <el-checkbox v-model="form.auto_rename">启用大模型自动改名</el-checkbox>
           <el-checkbox v-model="form.auto_move">启用全自动移动至语义文件夹</el-checkbox>
         </el-form-item>

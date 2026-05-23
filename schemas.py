@@ -48,6 +48,7 @@ class BatchStartRequest(BaseModel):
     max_process: Optional[int] = None
     auto_rename: bool = True
     auto_move: bool = True
+    run_mode: int = 1
 
 # 批量任务进度响应
 class BatchProgressResponse(BaseModel):

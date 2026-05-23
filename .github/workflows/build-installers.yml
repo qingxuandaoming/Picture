@@ -44,7 +44,7 @@ jobs:
           pip install pyinstaller platformdirs
 
       - name: Build with PyInstaller
-        run: pyinstaller VLM_Renamer_1.9.2.spec
+        run: pyinstaller VLM_Renamer.spec
 
       - name: Build Windows Installer (Inno Setup)
         if: runner.os == 'Windows'
@@ -61,17 +61,17 @@ jobs:
             --window-pos 200 120 \
             --window-size 600 400 \
             --icon-size 100 \
-            --icon "VLM_Renamer_1.9.2.app" 200 190 \
-            --hide-extension "VLM_Renamer_1.9.2.app" \
+            --icon "VLM_Renamer.app" 200 190 \
+            --hide-extension "VLM_Renamer.app" \
             --app-drop-link 400 190 \
             "dist/VLM_Renamer_macOS.dmg" \
-            "dist/VLM_Renamer_1.9.2.app"
+            "dist/VLM_Renamer.app"
 
       - name: Package Linux Binary
         if: runner.os == 'Linux'
         run: |
           cd dist
-          tar -czvf VLM_Renamer_Linux.tar.gz VLM_Renamer_1.9.2
+          tar -czvf VLM_Renamer_Linux.tar.gz VLM_Renamer
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4

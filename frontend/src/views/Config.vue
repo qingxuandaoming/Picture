@@ -62,6 +62,21 @@ const saveConfig = async () => {
   }
 }
 
+const selectingFolder = ref(false)
+const selectFolder = async () => {
+  selectingFolder.value = true
+  try {
+    const res = await request.get('/select_folder')
+    if (res && res.path) {
+      config.value.base_dir = res.path
+    }
+  } catch (error) {
+    ElMessage.error('无法打开文件夹选择框或未选择')
+  } finally {
+    selectingFolder.value = false
+  }
+}
+
 // 账号管理
 const editingAccount = reactive({})
 const newAccount = ref({ name: '', keys: [], model: '' })
@@ -394,7 +409,10 @@ onMounted(() => {
 
       <el-form :model="config" label-width="140px" size="large">
         <el-form-item label="图片根目录">
-          <el-input v-model="config.base_dir" placeholder="e:\Picture" />
+          <div style="display: flex; gap: 10px; width: 100%;">
+            <el-input v-model="config.base_dir" placeholder="e:\Picture" style="flex: 1;" />
+            <el-button @click="selectFolder" :loading="selectingFolder">浏览...</el-button>
+          </div>
         </el-form-item>
         <div class="grid-2">
           <el-form-item label="批次大小">

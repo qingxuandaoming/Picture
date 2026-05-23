@@ -1,8 +1,8 @@
-﻿@echo off
+@echo off
 chcp 65001 >nul
 title AI图片智能重命名与分类系统 启动器
 echo =======================================================
-echo   AI图片智能重命名与分类系统 (v1.9.2)
+echo   AI图片智能重命名与分类系统 (v2.1.0)
 echo =======================================================
 echo.
 
@@ -16,7 +16,7 @@ if not exist ".\.venv\Scripts\python.exe" (
 
 :: 检查前端 node_modules
 if not exist "frontend\node_modules" (
-    echo [提示] 未检测到前端依赖，正在尝试自动安装 (npm install)，请稍候...
+    echo [提示] 未检测到前端依赖，正在尝试自动安装 npm install ，请稍候...
     cd /d frontend
     call npm install
     if %errorlevel% neq 0 (
@@ -39,7 +39,7 @@ start "AI图片重命名前端" cmd /k "chcp 65001 >nul && cd /d frontend && npm
 echo.
 echo ===================================================
 echo 启动指令已发送！
-echo - 后端 API 文档: http://localhost:8000/docs
+echo - 后端 API 文档: http://localhost:8000/docs (若端口被占用会自动顺延至 8001/8002 等)
 echo - 前端网页界面: http://localhost:5173
 echo ===================================================
 echo 正在为您在浏览器中打开网页界面...
