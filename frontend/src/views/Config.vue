@@ -1,8 +1,8 @@
 <script setup>
 import { ref, onMounted, reactive } from 'vue'
 import request from '../utils/request'
-import { ElMessage } from 'element-plus'
-import { Plus, Delete, Edit, Check, Close } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Plus, Delete, Edit, Check, Close, Refresh, Download } from '@element-plus/icons-vue'
 
 const config = ref({
   base_dir: '',
@@ -128,6 +128,62 @@ const applyModelTemplate = (template, target) => {
 
 const restoreDefaultPrompt = () => {
   config.value.vlm_prompt_template = `请分析这张图片，返回JSON格式：\n{"description": "简洁中文内容描述，不超过20字，适合作文件名", "category": "从以下类别选一个：{VLM_CATEGORY_LIST}"}\n注意：只返回JSON，不要其他文字。description不要包含特殊字符（/:*?"<>|）`
+}
+
+// 版本更新功能
+const updateInfo = ref({
+  loading: false,
+  checked: false,
+  current_version: '',
+  latest_version: '',
+  has_update: false,
+  can_auto_update: false,
+  release_url: '',
+  release_notes: ''
+})
+
+const checkUpdate = async () => {
+  updateInfo.value.loading = true
+  try {
+    const data = await request.get('/system/check_update')
+    updateInfo.value = {
+      ...updateInfo.value,
+      ...data,
+      checked: true
+    }
+    if (data.has_update) {
+      ElMessage.success(`发现新版本：v${data.latest_version}`)
+    } else {
+      ElMessage.info('当前已是最新版本')
+    }
+  } catch (error) {
+    ElMessage.error('检查更新失败')
+  } finally {
+    updateInfo.value.loading = false
+  }
+}
+
+const pullUpdate = async () => {
+  try {
+    await ElMessageBox.confirm(
+      '确定要拉取最新版本并覆盖本地代码吗？此操作将使用 git 强制覆盖本地修改。',
+      '更新提示',
+      { confirmButtonText: '确认拉取', cancelButtonText: '取消', type: 'warning' }
+    )
+    
+    updateInfo.value.loading = true
+    await request.post('/system/pull_update')
+    ElMessageBox.alert('代码拉取覆盖成功！请彻底关闭当前的终端黑框，然后重新双击 start.bat 启动系统以应用更新。', '更新完成', {
+      type: 'success',
+      confirmButtonText: '好的，我知道了'
+    })
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error('拉取更新失败')
+    }
+  } finally {
+    updateInfo.value.loading = false
+  }
 }
 
 onMounted(() => {
@@ -349,6 +405,63 @@ onMounted(() => {
           </el-form-item>
         </div>
       </el-form>
+    </div>
+
+    <!-- 系统更新 -->
+    <div class="card mb-6">
+      <h3 class="card-title">
+        <span class="title-icon">🚀</span>
+        版本与更新
+      </h3>
+      <p class="card-desc">检查应用是否有新版本，并可通过一键覆盖拉取更新</p>
+      
+      <div class="update-section">
+        <div class="version-info">
+          <p v-if="!updateInfo.checked">点击检查更新获取最新版本信息</p>
+          <div v-else>
+            <p>当前版本：<el-tag type="info">v{{ updateInfo.current_version }}</el-tag></p>
+            <p class="mt-3" v-if="updateInfo.has_update">
+              最新版本：<el-tag type="success">v{{ updateInfo.latest_version }}</el-tag>
+              <span class="update-badge">有新更新！</span>
+            </p>
+            <p class="mt-3" v-else>
+              状态：<el-tag type="success">已经是最新版本</el-tag>
+            </p>
+            
+            <div v-if="updateInfo.has_update && updateInfo.release_notes" class="release-notes mt-3">
+              <h4>更新日志：</h4>
+              <pre>{{ updateInfo.release_notes }}</pre>
+            </div>
+          </div>
+        </div>
+        
+        <div class="update-actions mt-3">
+          <el-button type="primary" @click="checkUpdate" :loading="updateInfo.loading">
+            <el-icon class="mr-2"><Refresh /></el-icon> 检查更新
+          </el-button>
+          
+          <template v-if="updateInfo.checked && updateInfo.has_update">
+            <el-button 
+              v-if="updateInfo.can_auto_update" 
+              type="success" 
+              @click="pullUpdate" 
+              :loading="updateInfo.loading"
+            >
+              <el-icon class="mr-2"><Download /></el-icon> 一键拉取覆盖更新
+            </el-button>
+            <a 
+              v-else 
+              :href="updateInfo.release_url" 
+              target="_blank" 
+              style="margin-left: 12px; text-decoration: none;"
+            >
+              <el-button type="success">
+                前往发布页下载最新版
+              </el-button>
+            </a>
+          </template>
+        </div>
+      </div>
     </div>
 
     <!-- 保存按钮 -->
@@ -580,5 +693,33 @@ onMounted(() => {
     width: 100%;
     justify-content: flex-end;
   }
+}
+
+.update-section {
+  padding: 16px;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+}
+
+.update-badge {
+  color: #f56c6c;
+  font-weight: bold;
+  margin-left: 10px;
+}
+
+.release-notes {
+  background: var(--code-bg);
+  padding: 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.release-notes pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: inherit;
 }
 </style>

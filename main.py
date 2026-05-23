@@ -1204,6 +1204,95 @@ async def get_stats():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取统计失败: {str(e)}")
 
+# ===== 系统更新接口 =====
+import subprocess
+
+def parse_version(v_str):
+    """简单解析版本号，便于比较"""
+    return [int(x) if x.isdigit() else x for x in v_str.lstrip('v').split('.')]
+
+@app.get("/api/system/check_update", response_model=BaseResponse)
+async def check_update():
+    """检查应用更新"""
+    try:
+        from vlm_rename_v5 import VERSION
+        current_version = VERSION
+        
+        # 检查是否在 git 源码环境下
+        app_dir = Path(__file__).parent
+        git_dir = app_dir / ".git"
+        can_auto_update = git_dir.exists() and git_dir.is_dir()
+
+        import requests
+        headers = {
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "VLM-Renamer-App"
+        }
+        api_url = "https://api.github.com/repos/qingxuandaoming/Picture/releases/latest"
+        
+        try:
+            resp = requests.get(api_url, headers=headers, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            latest_version = data.get("tag_name", "").lstrip("v")
+            release_notes = data.get("body", "")
+            release_url = data.get("html_url", "")
+            
+            has_update = False
+            try:
+                if parse_version(latest_version) > parse_version(current_version):
+                    has_update = True
+            except:
+                if latest_version != current_version:
+                    has_update = True
+                    
+        except Exception as api_err:
+            print(f"检查更新失败: {api_err}")
+            return BaseResponse(data={
+                "current_version": current_version,
+                "latest_version": "未知",
+                "has_update": False,
+                "can_auto_update": can_auto_update,
+                "release_url": "https://github.com/qingxuandaoming/Picture/releases",
+                "release_notes": f"无法连接 GitHub API: {str(api_err)}"
+            })
+
+        return BaseResponse(data={
+            "current_version": current_version,
+            "latest_version": latest_version,
+            "has_update": has_update,
+            "can_auto_update": can_auto_update,
+            "release_url": release_url,
+            "release_notes": release_notes
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"检查更新异常: {str(e)}")
+
+@app.post("/api/system/pull_update", response_model=BaseResponse)
+async def pull_update():
+    """拉取最新版本并覆盖"""
+    try:
+        app_dir = Path(__file__).parent
+        git_dir = app_dir / ".git"
+        if not git_dir.exists():
+            raise HTTPException(status_code=400, detail="未检测到 Git 源码目录，无法执行自动拉取更新。请前往发布页下载最新版本。")
+            
+        try:
+            # 1. Fetch all
+            subprocess.run(["git", "fetch", "--all"], cwd=str(app_dir), check=True, capture_output=True, text=True)
+            # 2. Reset hard to origin/master
+            subprocess.run(["git", "reset", "--hard", "origin/master"], cwd=str(app_dir), check=True, capture_output=True, text=True)
+            
+            return BaseResponse(msg="更新成功，请关闭终端窗口并重新运行启动脚本生效。")
+        except subprocess.CalledProcessError as sub_err:
+            error_msg = sub_err.stderr if sub_err.stderr else "未知错误"
+            raise HTTPException(status_code=500, detail=f"Git 操作失败: {error_msg}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"拉取更新异常: {str(e)}")
+
+
 def get_frontend_dist() -> Path:
     if getattr(sys, 'frozen', False):
         return Path(sys._MEIPASS) / "frontend_dist"

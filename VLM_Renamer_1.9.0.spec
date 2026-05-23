@@ -1,4 +1,4 @@
-# -*- mode: python ; coding: utf-8 -*-
+﻿# -*- mode: python ; coding: utf-8 -*-
 
 
 a = Analysis(
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='VLM_Renamer_1.8.0',
+    name='VLM_Renamer_1.9.0',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -41,7 +41,7 @@ import sys
 if sys.platform == 'darwin':
     app = BUNDLE(
         exe,
-        name='VLM_Renamer_1.8.0.app',
+        name='VLM_Renamer_1.9.0.app',
         icon=None,
         bundle_identifier=None,
     )
