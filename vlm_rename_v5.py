@@ -35,7 +35,7 @@ v7.0.2 改进:
 """
 
 # 当前版本号，每次修改请按上方规则同步更新
-VERSION = "1.9.0"
+VERSION = "1.9.1"
 import os, re, json, time, shutil, base64, requests, io, threading, sys, hashlib, traceback
 from pathlib import Path
 from PIL import Image
@@ -181,7 +181,7 @@ def load_global_config():
     """动态读取并热加载配置文件中的全局变量"""
     global ACCOUNTS, API_ENDPOINT, MODEL, BASE_DIR, LOG_FILE, TEMP_FILE, MD5_FILE, ERROR_LOG, BATCH_SIZE, MAX_RETRIES, consecutive_failures
     if not CONFIG_FILE.exists():
-        run_setup_wizard()
+        return False
 
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -846,8 +846,10 @@ def main():
     global CURRENT_BATCH, key_hits, md5_hits, ACCOUNTS, BATCH_SIZE
     global BASE_DIR, LOG_FILE, TEMP_FILE, MD5_FILE, ERROR_LOG
 
-    # --- 照片目录选择 ---
-    select_base_dir()
+    if not CONFIG_FILE.exists():
+        print("尚未配置，请通过 Web 界面完成初始化。")
+        return
+
 
     # 账号选择交互
     print("=== 账号选择 ===")

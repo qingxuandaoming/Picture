@@ -1293,6 +1293,30 @@ async def pull_update():
         raise HTTPException(status_code=500, detail=f"拉取更新异常: {str(e)}")
 
 
+@app.get("/api/system/check_init", response_model=BaseResponse)
+async def check_init():
+    """检查系统是否已经初始化（是否存在配置，并且已设置照片根目录）"""
+    try:
+        from vlm_rename_v5 import CONFIG_FILE, load_config
+        if not CONFIG_FILE.exists():
+            return BaseResponse(data={"initialized": False, "reason": "no_config"})
+            
+        config = load_config()
+        base_dir = config.get("base_dir")
+        accounts = config.get("accounts", [])
+        
+        if not accounts or not accounts[0].get("keys"):
+            return BaseResponse(data={"initialized": False, "reason": "no_keys"})
+            
+        if not base_dir:
+            return BaseResponse(data={"initialized": False, "reason": "no_base_dir"})
+            
+        # 即使目录不存在，也算作初始化过，只是后端会报错，前端也可以处理
+        return BaseResponse(data={"initialized": True})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"检查初始化状态异常: {str(e)}")
+
+
 def get_frontend_dist() -> Path:
     if getattr(sys, 'frozen', False):
         return Path(sys._MEIPASS) / "frontend_dist"
@@ -1314,13 +1338,12 @@ if frontend_dist.exists():
         return FileResponse(frontend_dist / "index.html")
 
 if __name__ == "__main__":
-    from vlm_rename_v5 import load_global_config, select_base_dir
+    from vlm_rename_v5 import load_global_config
     
-    # 1. 触发初始向导
-    load_global_config()
-    
-    # 2. 触发目录选择框
-    select_base_dir()
+    try:
+        load_global_config()
+    except:
+        pass
 
     # 3. 自动打开浏览器
     def open_browser():

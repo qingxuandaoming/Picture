@@ -1,10 +1,10 @@
 ﻿; AI图片智能重命名与分类系统 Inno Setup 安装脚本
 ; --------------------------------------------------------
 
-#define MyAppName "AI图片重命名"
-#define MyAppVersion "1.9.0"
+#define MyAppName "AI图片重命名 (开发：陈冠衡)"
+#define MyAppVersion "1.9.1"
 #define MyAppPublisher "陈冠衡"
-#define MyAppExeName "VLM_Renamer_1.9.0.exe"
+#define MyAppExeName "VLM_Renamer_1.9.1.exe"
 
 [Setup]
 ; AppId是唯一标识符，用于卸载和更新。生成自己的 GUID：在 Inno Setup IDE 中按 Tools -> Generate GUID
@@ -20,14 +20,14 @@ DefaultGroupName={#MyAppName}
 DisableWelcomePage=no
 ; 输出安装包的名称和位置
 OutputDir=dist\installers
-OutputBaseFilename=VLM_Renamer_Setup_v1.9.0
+OutputBaseFilename=VLM_Renamer_Setup_v1.9.1
 ; 压缩算法
 Compression=lzma2/ultra64
 SolidCompression=yes
 ; 需要管理员权限来安装到 Program Files
 PrivilegesRequired=admin
 ; 卸载图标
-SetupIconFile=compiler:SetupClassicIcon.ico
+SetupIconFile=logo.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Languages]

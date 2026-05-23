@@ -22,14 +22,15 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='VLM_Renamer_1.9.0',
+    name='VLM_Renamer_1.9.1',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,
+    console=False,
+    icon='logo.ico',
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -41,7 +42,7 @@ import sys
 if sys.platform == 'darwin':
     app = BUNDLE(
         exe,
-        name='VLM_Renamer_1.9.0.app',
+        name='VLM_Renamer_1.9.1.app',
         icon=None,
         bundle_identifier=None,
     )
