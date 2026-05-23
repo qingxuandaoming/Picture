@@ -62,9 +62,32 @@ onMounted(() => {
     <!-- 主内容区域 -->
     <div class="main-content">
       <router-view />
+      
+      <footer class="app-footer">
+        <p>程序开发者：陈冠衡 | 年份：2026</p>
+        <p>
+          <a href="https://github.com/qingxuandaoming" target="_blank">GitHub 主页</a> | 
+          QQ 邮箱：<a href="mailto:925342921@qq.com">925342921@qq.com</a>
+        </p>
+      </footer>
     </div>
   </div>
 </template>
 
 <style scoped>
+.app-footer {
+  text-align: center;
+  padding: 20px;
+  color: var(--text);
+  font-size: 14px;
+  border-top: 1px solid var(--border);
+  margin-top: 20px;
+}
+.app-footer a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.app-footer a:hover {
+  text-decoration: underline;
+}
 </style>
