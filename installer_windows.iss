@@ -2,9 +2,9 @@
 ; --------------------------------------------------------
 
 #define MyAppName "AI图片重命名 (开发：陈冠衡)"
-#define MyAppVersion "1.9.1"
+#define MyAppVersion "1.9.2"
 #define MyAppPublisher "陈冠衡"
-#define MyAppExeName "VLM_Renamer_1.9.1.exe"
+#define MyAppExeName "VLM_Renamer_1.9.2.exe"
 
 [Setup]
 ; AppId是唯一标识符，用于卸载和更新。生成自己的 GUID：在 Inno Setup IDE 中按 Tools -> Generate GUID
@@ -20,7 +20,7 @@ DefaultGroupName={#MyAppName}
 DisableWelcomePage=no
 ; 输出安装包的名称和位置
 OutputDir=dist\installers
-OutputBaseFilename=VLM_Renamer_Setup_v1.9.1
+OutputBaseFilename=VLM_Renamer_Setup_v1.9.2
 ; 压缩算法
 Compression=lzma2/ultra64
 SolidCompression=yes

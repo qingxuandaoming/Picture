@@ -1,7 +1,7 @@
 ﻿# AGENTS.md — 图片智能重命名和分类项目
 
 > 本文件供 AI 编码助手阅读。项目所有代码、注释及交互界面均使用中文。
-> 当前版本：**v1.9.1**
+> 当前版本：**v1.9.2**
 
 ---
 
@@ -74,7 +74,7 @@ E:\Picture\                        # 照片根目录 (BASE_DIR)
 │   ├── config.example.json        # 配置模板
 │   ├── requirements.txt           # 依赖列表
 │   ├── start.bat / start.ps1      # 启动脚本
-│   ├── VLM_Renamer_1.9.1.spec     # PyInstaller 打包配置
+│   ├── VLM_Renamer_1.9.2.spec     # PyInstaller 打包配置
 │   ├── frontend\                  # 前端源码
 │   ├── dist\                      # 打包产物
 │   └── AGENTS.md / CLAUDE.md / README.md / LICENSE

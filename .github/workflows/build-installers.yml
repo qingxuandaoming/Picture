@@ -3,7 +3,7 @@
 on:
   push:
     tags:
-      - 'v*'  # 只有推送形如 v1.9.1 的 tag 时触发发布
+      - 'v*'  # 只有推送形如 v1.9.2 的 tag 时触发发布
   workflow_dispatch: # 允许在 Actions 页面手动点击触发
 
 permissions:
@@ -44,7 +44,7 @@ jobs:
           pip install pyinstaller platformdirs
 
       - name: Build with PyInstaller
-        run: pyinstaller VLM_Renamer_1.9.1.spec
+        run: pyinstaller VLM_Renamer_1.9.2.spec
 
       - name: Build Windows Installer (Inno Setup)
         if: runner.os == 'Windows'
@@ -61,17 +61,17 @@ jobs:
             --window-pos 200 120 \
             --window-size 600 400 \
             --icon-size 100 \
-            --icon "VLM_Renamer_1.9.1.app" 200 190 \
-            --hide-extension "VLM_Renamer_1.9.1.app" \
+            --icon "VLM_Renamer_1.9.2.app" 200 190 \
+            --hide-extension "VLM_Renamer_1.9.2.app" \
             --app-drop-link 400 190 \
             "dist/VLM_Renamer_macOS.dmg" \
-            "dist/VLM_Renamer_1.9.1.app"
+            "dist/VLM_Renamer_1.9.2.app"
 
       - name: Package Linux Binary
         if: runner.os == 'Linux'
         run: |
           cd dist
-          tar -czvf VLM_Renamer_Linux.tar.gz VLM_Renamer_1.9.1
+          tar -czvf VLM_Renamer_Linux.tar.gz VLM_Renamer_1.9.2
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
