@@ -35,7 +35,7 @@ v7.0.2 改进:
 """
 
 # 当前版本号，每次修改请按上方规则同步更新
-VERSION = "2.1.4"
+VERSION = "2.2.0"
 import os, re, json, time, shutil, base64, requests, io, threading, sys, hashlib, traceback
 from pathlib import Path
 from PIL import Image
@@ -275,30 +275,32 @@ def get_account_info(config, index=0):
     return accounts[index]
 
 def collect_images(base_dir=None, run_mode=1):
-    """收集所有待处理的图片"""
-    # 动态获取当前配置的最新根目录
+    """收集所有待处理的图片（支持嵌套子目录）"""
     if base_dir is None:
         base_dir = BASE_DIR
     else:
         base_dir = Path(base_dir)
 
     all_images = []
-    
-    # 无论何种模式，都扫描根目录的散落图片
-    if base_dir.exists():
-        for f in base_dir.iterdir():
-            if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
-                all_images.append({"path": f, "original_category": "根目录散落"})
+    if not base_dir.exists():
+        return all_images
+
+    def scan_directory(current_dir, is_root=False):
+        try:
+            for item in current_dir.iterdir():
+                # 忽略隐藏文件或系统目录
+                if item.name.startswith(('_', '.')):
+                    continue
                 
-    # 如果不是仅处理根目录模式(模式3)，则扫描所有子目录（不限于预设分类）
-    if run_mode != 3 and base_dir.exists():
-        for cat_dir in base_dir.iterdir():
-            if cat_dir.is_dir() and not cat_dir.name.startswith(('_', '.')):
-                cat = cat_dir.name
-                for f in cat_dir.iterdir():
-                    if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
-                        all_images.append({"path": f, "original_category": cat})
-                        
+                if item.is_file() and item.suffix.lower() in IMAGE_EXTS:
+                    cat = "根目录散落" if is_root else current_dir.name
+                    all_images.append({"path": item, "original_category": cat})
+                elif item.is_dir():
+                    scan_directory(item, is_root=False)
+        except (PermissionError, OSError):
+            pass
+
+    scan_directory(base_dir, is_root=True)
     return all_images
 
 from vlm_classify import CATEGORIES, SCAN_CATEGORIES, CATEGORY_KEYWORDS, IMAGE_EXTS, suggest_category, check_ratio_category
