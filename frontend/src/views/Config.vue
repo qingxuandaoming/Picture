@@ -184,7 +184,8 @@ const updateInfo = ref({
   has_update: false,
   can_auto_update: false,
   release_url: '',
-  release_notes: ''
+  release_notes: '',
+  download_url: ''
 })
 
 const checkUpdate = async () => {
@@ -228,6 +229,28 @@ const pullUpdate = async () => {
     }
   } finally {
     updateInfo.value.loading = false
+  }
+}
+
+const installUpdate = async () => {
+  try {
+    await ElMessageBox.confirm(
+      '系统将在后台下载安装包，下载完成后会自动结束当前程序并静默安装。安装过程大约需要1-2分钟，期间请勿强行关闭。是否开始更新？',
+      'OTA 静默更新',
+      { confirmButtonText: '立即开始', cancelButtonText: '取消', type: 'warning' }
+    )
+    
+    updateInfo.value.loading = true
+    const res = await request.post('/system/install_update', { download_url: updateInfo.value.download_url })
+    ElMessage.success(res.msg || '正在后台下载安装包，稍后将自动退出...')
+    
+    // We don't set loading=false here because the app will be killed anyway, 
+    // keeping the button spinning indicates background task is running.
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error('触发下载安装失败')
+      updateInfo.value.loading = false
+    }
   }
 }
 
@@ -533,6 +556,15 @@ onMounted(() => {
               :loading="updateInfo.loading"
             >
               <el-icon class="mr-2"><Download /></el-icon> 一键拉取覆盖更新
+            </el-button>
+            <el-button 
+              v-else-if="updateInfo.download_url" 
+              type="success" 
+              @click="installUpdate" 
+              :loading="updateInfo.loading"
+              style="margin-left: 12px;"
+            >
+              <el-icon class="mr-2"><Download /></el-icon> 自动下载并安装更新
             </el-button>
             <a 
               v-else 

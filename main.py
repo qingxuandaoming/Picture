@@ -1371,6 +1371,13 @@ def check_update():
                 if latest_version != current_version:
                     has_update = True
                     
+            download_url = ""
+            if has_update:
+                for asset in data.get("assets", []):
+                    if asset.get("name", "").endswith(".exe"):
+                        download_url = asset.get("browser_download_url", "")
+                        break
+                    
         except Exception as api_err:
             print(f"检查更新失败: {api_err}")
             return BaseResponse(data={
@@ -1379,7 +1386,8 @@ def check_update():
                 "has_update": False,
                 "can_auto_update": can_auto_update,
                 "release_url": "https://github.com/qingxuandaoming/Picture/releases",
-                "release_notes": f"无法连接 GitHub API: {str(api_err)}"
+                "release_notes": f"无法连接 GitHub API: {str(api_err)}",
+                "download_url": ""
             })
 
         return BaseResponse(data={
@@ -1388,10 +1396,40 @@ def check_update():
             "has_update": has_update,
             "can_auto_update": can_auto_update,
             "release_url": release_url,
-            "release_notes": release_notes
+            "release_notes": release_notes,
+            "download_url": download_url
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"检查更新异常: {str(e)}")
+
+@app.post("/api/system/install_update", response_model=BaseResponse)
+def install_update(payload: Dict[str, str] = Body(...)):
+    """下载并静默安装更新 (OTA)"""
+    download_url = payload.get("download_url")
+    if not download_url:
+        raise HTTPException(status_code=400, detail="未提供下载链接")
+        
+    def run_update():
+        try:
+            import tempfile, subprocess, os, time, requests
+            temp_dir = tempfile.gettempdir()
+            exe_path = os.path.join(temp_dir, "VLM_Renamer_Update.exe")
+            
+            with requests.get(download_url, stream=True, timeout=60) as r:
+                r.raise_for_status()
+                with open(exe_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                        
+            # 执行安装程序并加上静默安装参数
+            subprocess.Popen([exe_path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"])
+            time.sleep(2)
+            os._exit(0)  # 退出当前进程让安装程序覆盖
+        except Exception as e:
+            print(f"OTA 更新失败: {e}")
+
+    threading.Thread(target=run_update, daemon=True).start()
+    return BaseResponse(msg="后台正在下载并准备安装更新，稍后程序将自动重启")
 
 @app.post("/api/system/pull_update", response_model=BaseResponse)
 def pull_update():
