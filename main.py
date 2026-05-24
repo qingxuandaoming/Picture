@@ -208,6 +208,9 @@ def process_batch_task(task_id: str, base_dir: str, account_index: int, max_proc
                 return
 
             for idx, img_info in enumerate(batch_images):
+                with tasks_lock:
+                    if tasks.get(task_id, {}).get("status") == "cancelled":
+                        break
                 img_path = img_info["path"]
                 original_cat = img_info["original_category"]
 
@@ -264,8 +267,9 @@ def process_batch_task(task_id: str, base_dir: str, account_index: int, max_proc
                     tasks[task_id]["progress"] = min(100, int((idx + 1) / total * 100))
 
             with tasks_lock:
-                tasks[task_id]["status"] = "completed"
-                tasks[task_id]["progress"] = 100
+                if tasks.get(task_id, {}).get("status") != "cancelled":
+                    tasks[task_id]["status"] = "completed"
+                    tasks[task_id]["progress"] = 100
                 # 更新持久化统计
                 update_task_stats(
                     processed=tasks[task_id]["processed"],
@@ -343,8 +347,17 @@ def process_batch_task(task_id: str, base_dir: str, account_index: int, max_proc
 
             def web_worker_thread(account_info):
                 while True:
-                    if error_flag.is_set():
-                        break
+                    with tasks_lock:
+                        if error_flag.is_set() or tasks.get(task_id, {}).get("status") == "cancelled":
+                            # 清空队列防止 join 死锁
+                            while not task_queue.empty():
+                                try:
+                                    task_queue.get_nowait()
+                                    task_queue.task_done()
+                                except queue.Empty:
+                                    break
+                            break
+
                     try:
                         task = task_queue.get(timeout=1)
                     except queue.Empty:
@@ -387,7 +400,7 @@ def process_batch_task(task_id: str, base_dir: str, account_index: int, max_proc
                             with retry_lock:
                                 current_retries = retry_count.get(str(img_path), 0)
 
-                            if current_retries < MAX_RETRIES:
+                            if current_retries < MAX_RETRIES and not res.get("skip_retry"):
                                 with retry_lock:
                                     retry_count[str(img_path)] = current_retries + 1
                                 task_queue.put((idx, img_info))
@@ -435,8 +448,12 @@ def process_batch_task(task_id: str, base_dir: str, account_index: int, max_proc
             # 4. JSONL模式下无需在此进行全量落盘
 
             with tasks_lock:
-                tasks[task_id]["status"] = "completed"
-                tasks[task_id]["progress"] = 100
+                if tasks.get(task_id, {}).get("status") != "cancelled":
+                    if error_flag.is_set():
+                        tasks[task_id]["status"] = "failed"
+                    else:
+                        tasks[task_id]["status"] = "completed"
+                        tasks[task_id]["progress"] = 100
                 # 更新持久化统计
                 # 成功数 = 处理数 - 错误数（避免 renamed + reclassified 重复计算同一张图片）
                 actual_success = tasks[task_id]["processed"] - tasks[task_id]["errors"]
@@ -465,7 +482,7 @@ def process_batch_task(task_id: str, base_dir: str, account_index: int, max_proc
 
 # ===== 动态静态资源服务 =====
 @app.get("/images/{file_path:path}")
-async def serve_image(file_path: str):
+def serve_image(file_path: str):
     """动态安全地提供图片文件服务，支持 base_dir 热加载并防止路径穿越攻击"""
     try:
         base_dir = get_base_dir()
@@ -487,7 +504,7 @@ async def serve_image(file_path: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/thumbnail/{file_path:path}")
-async def serve_thumbnail(file_path: str):
+def serve_thumbnail(file_path: str):
     """动态生成并缓存图片缩略图，大幅优化前端加载速度"""
     try:
         base_dir = get_base_dir()
@@ -535,45 +552,28 @@ async def serve_thumbnail(file_path: str):
 import copy
 
 @app.get("/api/health", response_model=BaseResponse)
-async def health_check():
+def health_check():
     """健康检查接口"""
     return BaseResponse(data={"status": "ok", "version": "1.0.0"})
 
 @app.get("/api/config", response_model=BaseResponse)
-async def get_config():
+def get_config():
     """获取当前配置"""
     try:
         config = load_config()
-        # 隐藏API密钥敏感信息
-        safe_config = copy.deepcopy(config)
-        for acc in safe_config.get("accounts", []):
-            acc["keys"] = ["***" for _ in acc["keys"]]
-        return BaseResponse(data=safe_config)
+        # 不再在后端隐藏API密钥，因为这是一个本地应用，且前端有 type="password" 保护
+        # 否则前端点击“可见”时就只能看到 ***
+        return BaseResponse(data=config)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取配置失败: {str(e)}")
 
 @app.post("/api/config", response_model=BaseResponse)
-async def update_config(config_update: ConfigUpdate = Body(...)):
+def update_config(config_update: ConfigUpdate = Body(...)):
     """更新配置"""
     try:
         current_config = load_config()
         update_data = config_update.dict(exclude_unset=True)
         
-        # 防止前端传回的 *** 覆盖原有真实 key
-        if "accounts" in update_data:
-            current_accounts = current_config.get("accounts", [])
-            for i, acc in enumerate(update_data["accounts"]):
-                if "keys" in acc:
-                    # 如果传过来全是 ***，说明前端没修改，保留原key
-                    if all(k == "***" for k in acc["keys"]):
-                        if i < len(current_accounts):
-                            acc["keys"] = current_accounts[i].get("keys", [])
-                        else:
-                            acc["keys"] = []
-                    else:
-                        # 过滤掉其中的 ***（如果用户修改时部分填了***）
-                        acc["keys"] = [k for k in acc["keys"] if k != "***"]
-
         # 更新配置项
         current_config.update(update_data)
 
@@ -588,7 +588,7 @@ async def update_config(config_update: ConfigUpdate = Body(...)):
         raise HTTPException(status_code=500, detail=f"更新配置失败: {str(e)}")
 
 @app.post("/api/system/open_logs", response_model=BaseResponse)
-async def open_logs_dir():
+def open_logs_dir():
     """打开本地日志目录"""
     import os, platform, subprocess
     try:
@@ -604,7 +604,7 @@ async def open_logs_dir():
         raise HTTPException(status_code=500, detail=f"无法打开文件夹: {str(e)}")
 
 @app.post("/api/system/shutdown", response_model=BaseResponse)
-async def shutdown_system():
+def shutdown_system():
     """退出系统（结束后端进程）"""
     import os, threading, time
     def kill_server():
@@ -614,7 +614,7 @@ async def shutdown_system():
     return BaseResponse(msg="后端正在关闭...")
 
 @app.post("/api/system/clear_cache", response_model=BaseResponse)
-async def clear_system_cache(request: Request):
+def clear_system_cache(request: Request):
     """清除当前根目录的处理记录缓存（MD5记录），以便重新处理"""
     from vlm_rename_v5 import TEMP_FILE, MD5_FILE, db_lock, processed_keys, processed_md5s
     
@@ -657,7 +657,7 @@ async def clear_system_cache(request: Request):
 
 
 @app.get("/api/categories", response_model=BaseResponse)
-async def get_categories():
+def get_categories():
     """获取所有分类列表"""
     import vlm_classify
     categories = []
@@ -670,7 +670,7 @@ async def get_categories():
     return BaseResponse(data=categories)
 
 @app.get("/api/select_folder", response_model=BaseResponse)
-async def select_folder_dialog():
+def select_folder_dialog():
     """打开系统文件夹选择框，返回选择的路径"""
     try:
         import tkinter as tk
@@ -689,7 +689,7 @@ async def select_folder_dialog():
         raise HTTPException(status_code=500, detail=f"打开文件夹选择器失败: {str(e)}")
 
 @app.get("/api/categories/config", response_model=BaseResponse)
-async def get_categories_config():
+def get_categories_config():
     """获取动态分类的配置（categories.json内容）"""
     import vlm_classify
     return BaseResponse(data={
@@ -699,7 +699,7 @@ async def get_categories_config():
     })
 
 @app.post("/api/categories/config", response_model=BaseResponse)
-async def update_categories_config(update_req: CategoryConfigUpdate = Body(...)):
+def update_categories_config(update_req: CategoryConfigUpdate = Body(...)):
     """更新动态分类配置并保存到 categories.json"""
     import vlm_classify
     try:
@@ -713,7 +713,7 @@ async def update_categories_config(update_req: CategoryConfigUpdate = Body(...))
         raise HTTPException(status_code=500, detail=f"保存分类失败: {str(e)}")
 
 @app.post("/api/ai_assist/optimize", response_model=BaseResponse)
-async def ai_assist_optimize(req: AiAssistRequest = Body(...)):
+def ai_assist_optimize(req: AiAssistRequest = Body(...)):
     """召唤 AI 自动完善分类关键词"""
     import requests
     from vlm_rename_v5 import get_account_info, load_config
@@ -786,7 +786,7 @@ async def ai_assist_optimize(req: AiAssistRequest = Body(...)):
 
 # ===== 图片处理接口 =====
 @app.post("/api/image/analyze", response_model=BaseResponse)
-async def analyze_single_image(request: ImageAnalyzeRequest = Body(...)):
+def analyze_single_image(request: ImageAnalyzeRequest = Body(...)):
     """单张图片分析（仅分析，不修改文件）"""
     try:
         config = load_config()
@@ -816,7 +816,7 @@ async def analyze_single_image(request: ImageAnalyzeRequest = Body(...)):
         raise HTTPException(status_code=500, detail=f"分析失败: {str(e)}")
 
 @app.post("/api/image/process", response_model=BaseResponse)
-async def process_single_image(
+def process_single_image(
     image_path: str = Body(...),
     account_index: int = Body(0),
     auto_rename: bool = Body(True),
@@ -851,7 +851,7 @@ _cache_timestamp = 0
 CACHE_TTL = 30  # 缓存30秒
 
 @app.get("/api/images/pending", response_model=BaseResponse)
-async def get_pending_images(limit: int = 50, use_cache: bool = True):
+def get_pending_images(limit: int = 50, use_cache: bool = True):
     """获取待处理的图片列表（未整理的图片）- 优化版，带缓存"""
     try:
         global _pending_images_cache, _cache_timestamp
@@ -875,7 +875,7 @@ async def get_pending_images(limit: int = 50, use_cache: bool = True):
         # 因为未处理的图片通常是刚拷贝进来的新文件，这样排列能让程序优先检查新文件。
         # 配合 limit 限制，只要找到足够数量的未处理图片就会立刻跳出循环，避免对几千张已处理老图片进行缓慢的 MD5 计算。
         try:
-            images.sort(key=lambda x: x["path"].stat().st_mtime, reverse=True)
+            images.sort(key=lambda x: x.get("mtime", 0), reverse=True)
         except Exception:
             pass
         
@@ -911,7 +911,7 @@ async def get_pending_images(limit: int = 50, use_cache: bool = True):
         raise HTTPException(status_code=500, detail=f"获取待处理图片失败: {str(e)}")
 
 @app.get("/api/categories/{category_name}/files", response_model=BaseResponse)
-async def get_category_files(category_name: str):
+def get_category_files(category_name: str):
     """获取特定分类目录下的图片列表"""
     try:
         base_dir = get_base_dir()
@@ -947,7 +947,7 @@ async def get_category_files(category_name: str):
         raise HTTPException(status_code=500, detail=f"获取分类文件失败: {str(e)}")
 
 @app.post("/api/image/rename", response_model=BaseResponse)
-async def rename_image(request: ImageRenameRequest = Body(...)):
+def rename_image(request: ImageRenameRequest = Body(...)):
     """手动重命名图片，支持安全校验与同名防冲突"""
     try:
         base_dir = get_base_dir()
@@ -1007,7 +1007,7 @@ async def rename_image(request: ImageRenameRequest = Body(...)):
         raise HTTPException(status_code=500, detail=f"重命名失败: {str(e)}")
 
 @app.post("/api/image/move", response_model=BaseResponse)
-async def move_image(request: ImageMoveRequest = Body(...)):
+def move_image(request: ImageMoveRequest = Body(...)):
     """手动移动图片到新的分类目录下，支持同名递增防覆盖"""
     try:
         from vlm_rename_v5 import load_global_config
@@ -1077,7 +1077,7 @@ async def move_image(request: ImageMoveRequest = Body(...)):
         raise HTTPException(status_code=500, detail=f"移动失败: {str(e)}")
 
 @app.delete("/api/image", response_model=BaseResponse)
-async def delete_image(request: ImageDeleteRequest = Body(...)):
+def delete_image(request: ImageDeleteRequest = Body(...)):
     """手动删除图片文件，严格限制在 base_dir 范围内"""
     try:
         base_dir = get_base_dir()
@@ -1100,7 +1100,7 @@ async def delete_image(request: ImageDeleteRequest = Body(...)):
 
 # ===== 批量任务接口 =====
 @app.post("/api/batch/start", response_model=BaseResponse)
-async def start_batch_process(request: BatchStartRequest = Body(...)):
+def start_batch_process(request: BatchStartRequest = Body(...)):
     """启动批量处理任务"""
     try:
         # 检查是否已有运行中的批量任务
@@ -1146,7 +1146,7 @@ async def start_batch_process(request: BatchStartRequest = Body(...)):
         raise HTTPException(status_code=500, detail=f"启动任务失败: {str(e)}")
 
 @app.post("/api/batch/classify", response_model=BaseResponse)
-async def start_classify_task(
+def start_classify_task(
     base_dir: Optional[str] = Body(None),
     max_process: Optional[int] = Body(None),
     auto_move: bool = Body(True)
@@ -1192,8 +1192,17 @@ async def start_classify_task(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"启动任务失败: {str(e)}")
 
+@app.post("/api/batch/cancel/{task_id}", response_model=BaseResponse)
+def cancel_batch_task(task_id: str):
+    """取消运行中的任务"""
+    with tasks_lock:
+        if task_id in tasks and tasks[task_id]["status"] == "processing":
+            tasks[task_id]["status"] = "cancelled"
+            return BaseResponse(msg="任务正在取消...")
+    raise HTTPException(status_code=400, detail="任务不存在或已结束")
+
 @app.get("/api/batch/progress/{task_id}", response_model=BaseResponse)
-async def get_batch_progress(task_id: str):
+def get_batch_progress(task_id: str):
     """查询批量任务进度"""
     try:
         with tasks_lock:
@@ -1217,7 +1226,7 @@ async def get_batch_progress(task_id: str):
         raise HTTPException(status_code=500, detail=f"获取进度失败: {str(e)}")
 
 @app.get("/api/batch/tasks", response_model=BaseResponse)
-async def get_all_tasks():
+def get_all_tasks():
     """获取所有任务列表"""
     try:
         with tasks_lock:
@@ -1228,7 +1237,7 @@ async def get_all_tasks():
 
 # ===== 日志接口 =====
 @app.get("/api/logs", response_model=BaseResponse)
-async def get_logs(limit: int = 100, offset: int = 0):
+def get_logs(limit: int = 100, offset: int = 0):
     """获取处理日志"""
     try:
         log_file = get_log_file()
@@ -1250,7 +1259,7 @@ async def get_logs(limit: int = 100, offset: int = 0):
         raise HTTPException(status_code=500, detail=f"获取日志失败: {str(e)}")
 
 @app.get("/api/stats", response_model=BaseResponse)
-async def get_stats():
+def get_stats():
     """获取统计信息"""
     try:
         config = load_config()
@@ -1328,7 +1337,7 @@ def parse_version(v_str):
     return [int(x) if x.isdigit() else x for x in v_str.lstrip('v').split('.')]
 
 @app.get("/api/system/check_update", response_model=BaseResponse)
-async def check_update():
+def check_update():
     """检查应用更新"""
     try:
         from vlm_rename_v5 import VERSION
@@ -1385,7 +1394,7 @@ async def check_update():
         raise HTTPException(status_code=500, detail=f"检查更新异常: {str(e)}")
 
 @app.post("/api/system/pull_update", response_model=BaseResponse)
-async def pull_update():
+def pull_update():
     """拉取最新版本并覆盖"""
     try:
         app_dir = Path(__file__).parent
@@ -1410,7 +1419,7 @@ async def pull_update():
 
 
 @app.get("/api/system/check_init", response_model=BaseResponse)
-async def check_init():
+def check_init():
     """检查系统是否已经初始化（是否存在配置，并且已设置照片根目录）"""
     try:
         from vlm_rename_v5 import CONFIG_FILE, load_config

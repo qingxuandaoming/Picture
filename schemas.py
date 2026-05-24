@@ -17,6 +17,7 @@ class ConfigUpdate(BaseModel):
     base_dir: Optional[str] = None
     batch_size: Optional[int] = None
     max_retries: Optional[int] = None
+    exclude_extensions: Optional[List[str]] = None
 
 # 分类配置更新
 class CategoryConfigUpdate(BaseModel):

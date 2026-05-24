@@ -67,10 +67,12 @@ const checkTaskProgress = async () => {
     if (taskIndex !== -1) {
       tasks.value[taskIndex] = { ...tasks.value[taskIndex], ...data }
 
-      // 如果任务完成，停止轮询
-      if (data.status === 'completed' || data.status === 'failed') {
+      // 如果任务完成或被取消，停止轮询
+      if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
         stopPolling()
-        ElMessage.success(data.status === 'completed' ? '任务完成！' : '任务失败')
+        if (data.status === 'completed') ElMessage.success('任务完成！')
+        else if (data.status === 'failed') ElMessage.error('任务失败')
+        else ElMessage.info('任务已取消')
       }
     } else {
       // 如果是新任务，添加到列表
@@ -95,11 +97,24 @@ const stopPolling = () => {
   }
 }
 
+const cancelTask = async (taskId) => {
+  try {
+    await request.post(`/batch/cancel/${taskId}`)
+    ElMessage.success('已发出取消指令')
+    if (currentTaskId.value === taskId) {
+      checkTaskProgress()
+    }
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '取消失败')
+  }
+}
+
 const getStatusType = (status) => {
   switch (status) {
     case 'completed': return 'success'
     case 'processing': return 'primary'
     case 'failed': return 'danger'
+    case 'cancelled': return 'info'
     default: return 'info'
   }
 }
@@ -109,6 +124,7 @@ const getStatusText = (status) => {
     case 'completed': return '已完成'
     case 'processing': return '处理中'
     case 'failed': return '失败'
+    case 'cancelled': return '已取消'
     default: return '等待中'
   }
 }
@@ -248,6 +264,21 @@ onUnmounted(() => {
           >
             {{ task.status === 'processing' && currentTaskId === task.id ? '实时刷新中...' : '刷新进度' }}
           </el-button>
+          
+          <el-popconfirm
+            v-if="task.status === 'processing'"
+            title="确定要取消此任务吗？已处理的图片进度会保留。"
+            confirm-button-text="确定取消"
+            cancel-button-text="放弃"
+            confirm-button-type="danger"
+            @confirm="cancelTask(task.id)"
+          >
+            <template #reference>
+              <el-button type="danger" plain>
+                取消任务
+              </el-button>
+            </template>
+          </el-popconfirm>
         </div>
       </div>
     </div>

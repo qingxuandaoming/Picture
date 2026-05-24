@@ -35,7 +35,7 @@ v7.0.2 改进:
 """
 
 # 当前版本号，每次修改请按上方规则同步更新
-VERSION = "2.2.5"
+VERSION = "2.3.0"
 import os, re, json, time, shutil, base64, requests, io, threading, sys, hashlib, traceback
 from pathlib import Path
 from PIL import Image
@@ -84,6 +84,9 @@ update_data_paths(BASE_DIR)
 BATCH_SIZE = 500
 CURRENT_BATCH = 1
 MAX_RETRIES = 3
+EXCLUDE_EXTENSIONS = [".svg"]
+
+# 状态与统计
 RUN_MODE = 1
 
 # 线程锁与同步对象
@@ -197,7 +200,7 @@ def _migrate_data_files():
 
 def load_global_config():
     """动态读取并热加载配置文件中的全局变量"""
-    global ACCOUNTS, API_ENDPOINT, MODEL, BASE_DIR, LOG_FILE, TEMP_FILE, MD5_FILE, ERROR_LOG, BATCH_SIZE, MAX_RETRIES, consecutive_failures
+    global ACCOUNTS, API_ENDPOINT, MODEL, BASE_DIR, LOG_FILE, TEMP_FILE, MD5_FILE, ERROR_LOG, BATCH_SIZE, MAX_RETRIES, consecutive_failures, EXCLUDE_EXTENSIONS
     if not CONFIG_FILE.exists():
         return False
 
@@ -214,8 +217,10 @@ def load_global_config():
         # 自动迁移旧位置的数据文件到标准目录
         _migrate_data_files()
         
+        
         BATCH_SIZE = cfg.get("batch_size", 500)
         MAX_RETRIES = cfg.get("max_retries", 3)
+        EXCLUDE_EXTENSIONS = cfg.get("exclude_extensions", [".svg"])
         
         # 更新连续失败计数器结构
         for acc in ACCOUNTS:
@@ -285,22 +290,30 @@ def collect_images(base_dir=None, run_mode=1):
     if not base_dir.exists():
         return all_images
 
-    def scan_directory(current_dir, is_root=False):
+    def scan_directory(current_dir_path, is_root=False):
         try:
-            for item in current_dir.iterdir():
-                # 忽略隐藏文件或系统目录
-                if item.name.startswith(('_', '.')):
-                    continue
-                
-                if item.is_file() and item.suffix.lower() in IMAGE_EXTS:
-                    cat = "根目录散落" if is_root else current_dir.name
-                    all_images.append({"path": item, "original_category": cat})
-                elif item.is_dir():
-                    scan_directory(item, is_root=False)
+            with os.scandir(current_dir_path) as it:
+                for entry in it:
+                    # 忽略隐藏文件或系统目录
+                    if entry.name.startswith(('_', '.')):
+                        continue
+                    
+                    if entry.is_file():
+                        _, ext = os.path.splitext(entry.name)
+                        if ext.lower() in IMAGE_EXTS and ext.lower() not in EXCLUDE_EXTENSIONS:
+                            cat = "根目录散落" if is_root else os.path.basename(current_dir_path)
+                            mtime = entry.stat().st_mtime
+                            all_images.append({
+                                "path": Path(entry.path),
+                                "original_category": cat,
+                                "mtime": mtime
+                            })
+                    elif entry.is_dir():
+                        scan_directory(entry.path, is_root=False)
         except (PermissionError, OSError):
             pass
 
-    scan_directory(base_dir, is_root=True)
+    scan_directory(str(base_dir), is_root=True)
     return all_images
 
 from vlm_classify import CATEGORIES, SCAN_CATEGORIES, CATEGORY_KEYWORDS, IMAGE_EXTS, suggest_category, check_ratio_category
@@ -563,6 +576,14 @@ def analyze_image(image_path, account_info, run_mode=1, available_folders=None):
                 except Exception:
                     pass
                 last_error = f"HTTP {status_code}: {error_body[:100]}"
+                
+                # 400客户端错误（如格式不支持、鉴黄拦截、尺寸过大等）直接放弃该图片，不计入连续失败，不重试
+                if status_code == 400:
+                    with print_lock:
+                        print(f"  ⚠️ [{account_name}] API拒绝处理该图片 (HTTP 400): {error_body[:80]}")
+                    log_error(f"图片请求被拒(400) [{account_name}] {image_path.name}: {error_body[:100]}")
+                    return "!CLIENT_ERROR", None
+
                 # 429 限流等久一点，其他快速重试
                 time.sleep(1.0 if status_code == 429 else 0.1)
             except requests.exceptions.ConnectionError:
@@ -632,6 +653,9 @@ def process_single_image(img_info, account_info, idx, total_tasks, run_mode=1, a
         print(f"[{account_name}][{idx+1}/{total_tasks}] {img_path.name[:45]}...")
 
     description, vlm_category = analyze_image(img_path, account_info, run_mode, available_folders)
+    if description == "!CLIENT_ERROR":
+        return False  # 失败，因为是CLIENT_ERROR，外部会处理
+
     
     if run_mode == 3:
         if not vlm_category:
@@ -728,6 +752,12 @@ def process_single_image_api(img_info, account_info, auto_rename: bool = True, a
         return result
 
     description, vlm_category = analyze_image(img_path, account_info, run_mode, available_folders)
+    
+    if description == "!CLIENT_ERROR":
+        result["error"] = "API拒绝处理该图片(不支持的格式或内容)"
+        result["skip_retry"] = True
+        return result
+
     
     if run_mode == 3:
         if not vlm_category:

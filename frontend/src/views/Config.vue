@@ -12,6 +12,7 @@ const config = ref({
   vlm_prompt_template: '',
   batch_size: 500,
   max_retries: 3,
+  exclude_extensions: ['.svg'],
   accounts: []
 })
 
@@ -451,7 +452,31 @@ onMounted(() => {
             <el-input-number v-model="config.max_retries" :min="1" :max="10" class="w-full" />
           </el-form-item>
         </div>
-        <el-form-item label="清理与排查">
+        
+        <el-collapse style="margin-top: 15px; width: 100%;">
+          <el-collapse-item title="高级过滤设置 (已排除的文件类型)" name="1">
+            <el-form-item label="排除后缀名" style="margin-bottom: 0;">
+              <el-select
+                v-model="config.exclude_extensions"
+                multiple
+                filterable
+                allow-create
+                default-first-option
+                placeholder="请选择或输入要排除的后缀名 (如 .svg)"
+                style="width: 100%"
+              >
+                <el-option label=".svg" value=".svg" />
+                <el-option label=".ico" value=".ico" />
+                <el-option label=".heic" value=".heic" />
+              </el-select>
+              <div style="width: 100%; margin-top: 5px;">
+                <span style="color: var(--text-lighter); font-size: 13px;">包含以上后缀名的图片将被系统在最初扫描时直接跳过处理。按回车添加新的。</span>
+              </div>
+            </el-form-item>
+          </el-collapse-item>
+        </el-collapse>
+
+        <el-form-item label="清理与排查" style="margin-top: 20px;">
           <div style="display: flex; gap: 10px; flex-wrap: wrap;">
             <el-button @click="openLogsFolder" type="info" plain>
               <el-icon class="mr-2"><FolderOpened /></el-icon> 打开数据与日志文件夹
