@@ -163,7 +163,8 @@ body {
   padding-top: 12px;
   width: 100%;
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
 }
 
 /* ========== 主内容区域 ========== */
