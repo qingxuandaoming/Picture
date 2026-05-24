@@ -1,3 +1,5 @@
+[中文](README.md) | [English](README_EN.md)
+
 # 🌟 图片智能重命名和分类工具 (VLM Renamer)
 
 这是一个基于**视觉语言模型（VLM）**的本地图片全自动整理神器。
