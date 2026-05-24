@@ -2,7 +2,7 @@
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
 Write-Host "=======================================================" -ForegroundColor Cyan
-Write-Host "  AI图片智能重命名与分类系统 (v2.2.2)" -ForegroundColor Cyan
+Write-Host "  AI图片智能重命名与分类系统 (v2.2.3)" -ForegroundColor Cyan
 Write-Host "=======================================================" -ForegroundColor Cyan
 Write-Host ""
 

@@ -2,7 +2,7 @@
 ; --------------------------------------------------------
 
 #define MyAppName "AI图片重命名 (开发：陈冠衡)"
-#define MyAppVersion "2.2.2"
+#define MyAppVersion "2.2.3"
 #define MyAppPublisher "陈冠衡"
 #define MyAppExeName "VLM_Renamer.exe"
 
@@ -20,7 +20,7 @@ DefaultGroupName={#MyAppName}
 DisableWelcomePage=no
 ; 输出安装包的名称和位置
 OutputDir=dist\installers
-OutputBaseFilename=VLM_Renamer_Setup_v2.2.2
+OutputBaseFilename=VLM_Renamer_Setup_v2.2.3
 ; 压缩算法
 Compression=lzma2/ultra64
 SolidCompression=yes
