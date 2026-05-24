@@ -673,20 +673,16 @@ async def get_categories():
 async def select_folder_dialog():
     """打开系统文件夹选择框，返回选择的路径"""
     try:
-        import subprocess
-        cmd = '''
-        Add-Type -AssemblyName System.windows.forms
-        $f = New-Object System.Windows.Forms.FolderBrowserDialog
-        $f.Description = "请选择图片所在的根目录"
-        $f.ShowNewFolderButton = $true
-        if ($f.ShowDialog() -eq "OK") {
-            Write-Output $f.SelectedPath
-        }
-        '''
-        result = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0)
-        selected_path = result.stdout.strip()
+        import tkinter as tk
+        from tkinter import filedialog
+        import os
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        selected_path = filedialog.askdirectory(title="请选择图片所在的根目录")
+        root.destroy()
         if selected_path:
-            return BaseResponse(data={"path": selected_path})
+            return BaseResponse(data={"path": os.path.normpath(selected_path)})
         else:
             return BaseResponse(msg="未选择目录", data={"path": ""})
     except Exception as e:
@@ -1265,16 +1261,22 @@ async def get_stats():
         total_files = 0
         processed_md5s = set()  # MD5 去重集合
 
-        # 从 MD5 去重记录文件读取已处理记录
-        md5_file = USER_DATA_DIR / "processed_md5.txt"
-        if md5_file.exists():
-            with open(md5_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        parts = line.split("|", 1)
-                        if len(parts) >= 1 and parts[0]:
-                            processed_md5s.add(parts[0])
+        # 获取 dir_hash，与 vlm_rename_v5 的逻辑保持一致
+        import hashlib
+        dir_hash = hashlib.md5(str(base_dir).encode()).hexdigest()[:8]
+
+        # 从 MD5 去重记录文件读取已处理记录（包含普通模式和模式3的缓存）
+        from vlm_rename_v5 import USER_DATA_DIR
+        for filename in [f"processed_md5_{dir_hash}.txt", f"processed_md5_mode3_{dir_hash}.txt"]:
+            md5_file = USER_DATA_DIR / filename
+            if md5_file.exists():
+                with open(md5_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            parts = line.split("|", 1)
+                            if len(parts) >= 1 and parts[0]:
+                                processed_md5s.add(parts[0])
 
         # 统计当前文件
         from vlm_rename_v5 import collect_images
